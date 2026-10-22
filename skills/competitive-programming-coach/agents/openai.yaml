@@ -1,0 +1,6 @@
+interface:
+  display_name: "Competitive Programming Coach"
+  short_description: "Analyze problems and design stress tests"
+  default_prompt: "Use $competitive-programming-coach to analyze this problem and design coverage-focused stress tests."
+policy:
+  allow_implicit_invocation: false
