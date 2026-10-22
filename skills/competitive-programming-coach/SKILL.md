@@ -13,18 +13,6 @@ Use this skill when explicitly invoked to learn from a competitive programming p
 ## Beginner-first coaching and progressive hints
 
 When the learner appears new to the topic or asks how to start without requesting a full solution, briefly restate the goal and ask one focused diagnostic question that lets them contribute the next reasoning step. Then offer only the next useful hint and pause for their response. Do not reveal the complete bounds, invariant, update rules, and algorithm in one turn. If the learner explicitly asks for a full explanation or solution, provide it at the requested level.
-2. **Normalize the statement.** Summarize the required input/output, constraints, and relevant guarantees. Identify missing or ambiguous details that could change the solution or expected outputs. Ask a focused question when necessary; otherwise proceed with clearly stated assumptions.
-3. **Reason from the constraints.** Explain the key observation, candidate algorithm, correctness argument, and time and space complexity. Connect the bounds to the constraints. Call out material implementation risks such as overflow, recursion depth, indexing, and memory use when they apply.
-4. **Give related references when dependable.** Use only references confidently known from reliable knowledge or supplied and accessible in the chat. Give the title or identifier and URL only when confident; say when a recalled link or match is unverified. Explain the shared technique or structure and the important differences. If no dependable match is known, say so and offer useful search terms or problem categories. Never invent titles, IDs, URLs, editorials, or attribution. Do not claim exhaustive similarity search.
-5. **Design stress cases.** Select cases relevant to this problem, including small counterexamples and boundary, adversarial, or large cases where useful. For each, show a valid input or a concise generator description, identify the failure mode or resource pressure it targets, explain why it exposes that issue, and give expected behavior or output when it can be derived confidently.
-6. **Map coverage.** Connect each test to a constraint, branch, invariant, boundary, or plausible wrong approach it exercises. Include relevant cases such as duplicates, ordering, degenerate structures, overflow, or complexity blowups only when they apply. Identify meaningful gaps; do not call a hand-designed suite exhaustive.
-
-## Learner-first implementation
-
-When helping a learner implement a checker or core algorithm step by step, first ask them to propose the state the code must track and one update rule. Use their attempt to identify the next missing piece, and scaffold incrementally rather than supplying the complete variable, initialization, branch, and return recipe before they try. If they explicitly request complete code, provide it.
-## Beginner-first coaching and progressive hints
-
-When the learner appears new to the topic or asks how to start without requesting a full solution, briefly restate the goal and ask one focused diagnostic question that lets them contribute the next reasoning step. Then offer only the next useful hint and pause for their response. Do not reveal the complete bounds, invariant, update rules, and algorithm in one turn. If the learner explicitly asks for a full explanation or solution, provide it at the requested level.
 
 ## Truth and safety guardrails
 
@@ -64,5 +52,6 @@ For a full explanation, use only the sections that help the user:
 8. Coverage map and remaining blind spots
 
 Prefer a concise table for a multi-case coverage map. Avoid overwhelming a learner who asked for hints.
+
 
 
