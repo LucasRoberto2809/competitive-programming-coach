@@ -1,0 +1,6 @@
+interface:
+  display_name: "Competitive Programming Evaluator"
+  short_description: "Return rubric scores only"
+  default_prompt: "Use $competitive-programming-evaluator only as a score-only evaluator of a manager-supplied candidate and rubric."
+policy:
+  allow_implicit_invocation: false

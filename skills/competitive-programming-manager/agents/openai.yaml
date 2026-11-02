@@ -1,0 +1,6 @@
+interface:
+  display_name: "Competitive Programming Manager"
+  short_description: "Route study and solution requests safely"
+  default_prompt: "Use $competitive-programming-manager to collect my competitive programming preferences and route the request."
+policy:
+  allow_implicit_invocation: true
