@@ -1,0 +1,6 @@
+interface:
+  display_name: "Competitive Programming Originality"
+  short_description: "Flag reused published problems in Problem Setter statements"
+  default_prompt: "Use $competitive-programming-manager to check a Problem Setter statement for reuse of published problems."
+policy:
+  allow_implicit_invocation: false

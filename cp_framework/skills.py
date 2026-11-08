@@ -10,6 +10,7 @@ SKILL_NAMES = {
     "coach": "competitive-programming-coach",
     "solver": "competitive-programming-solver",
     "evaluator": "competitive-programming-evaluator",
+    "originality": "competitive-programming-originality",
 }
 
 

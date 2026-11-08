@@ -1,5 +1,7 @@
 data/sources/*.json
 data/sources/*.tmp
+data/sources/.codeforces_last_request
+data/sessions/
 __pycache__/
 *.py[cod]
 .venv/

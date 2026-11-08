@@ -7,8 +7,10 @@ import hmac
 import os
 from typing import Any
 
+from ..catalog import find_problem_refs, find_similar_problems, load_catalog, normalize, resolve_tags
 from ..config import MODE, PASS_THRESHOLD, REQUIRE_JEV, validate_mode
 from ..io import run_cli
+from ..messages import FLOW, detect_language, text as message
 from ..providers import JevClient
 from ..skills import load_skill
 
@@ -63,7 +65,7 @@ ASK_FULL_PROBLEM_RE = re.compile(
     r"\b(invente|crie|gere|escreva|fa[cç]a)\b.{0,35}\b(problema completo|problema pronto|enunciado completo|problema para submeter)\b",
     re.I | re.S,
 )
-ASK_STRESS_RE = re.compile(r"\b(stress|estress|casos? de teste|testes prontos|gerador aleat[oó]rio|random test)\b", re.I)
+ASK_STRESS_RE = re.compile(r"\b(stress\w*|estress\w*|casos? de teste|testes prontos|gerador aleat[oó]rio|random test)\b", re.I)
 ASK_STRESS_METHOD_RE = re.compile(r"\b(como|n[aã]o sei|ajuda|ensina).{0,35}\b(stress|estress|testar|casos? de teste)\b", re.I | re.S)
 STATEMENT_LABEL_RE = re.compile(r"(?:problem\s*statement|statement|enunciado)\s*:\s*", re.I)
 CONSTRAINT_LABEL_RE = re.compile(r"(?:constraints?|limites?|restri[cç][oõ]es)\s*:\s*", re.I)
@@ -71,6 +73,148 @@ STRESS_HYPOTHESIS_LABEL_RE = re.compile(
     r"(?:stress\s+hypothesis|hypothesis|hip[oó]tese|ideia\s+de\s+estresse|falha\s+prov[aá]vel)\s*:\s*([^\n]+)",
     re.I,
 )
+
+# Intent patterns run on accent-free, lower-cased text (catalog.normalize).
+SOLUTION_REQUEST_RES = [
+    re.compile(
+        r"\b(?:me\s+)?(?:da|de|passa|passe|manda|mande|mostra|mostre|entrega|entregue|envia|envie|"
+        r"escreve|escreva|quero|queria|preciso\s+d[aeo])\s+(?:logo\s+|agora\s+|ja\s+|so\s+)?(?:a|o)?\s*"
+        r"(?:solucao|resposta|codigo|implementacao|gabarito)\b"
+        r"(?!\s+(?:esta|ta|que\s+eu|abaixo|acima))"
+    ),
+    re.compile(r"\bresolv[ae]\s+(?:isso\s+|esse\s+problema\s+|o\s+problema\s+)?(?:pra|para|por)\s+mim\b"),
+    re.compile(r"\b(?:solucao|codigo|resposta)\s+(?:completa|completo|final|pronta|pronto|inteira|inteiro)\b"),
+    re.compile(r"\bsem\s+(?:dicas?|enrola\w*|explica\w*)\b"),
+    re.compile(r"\b(?:give|send|show)\s+me\s+(?:the\s+)?(?:full\s+|complete\s+|final\s+)?(?:solution|code|answer)\b"),
+    re.compile(r"\b(?:full|complete)\s+(?:solution|code)\b"),
+]
+BYPASS_RES = [
+    re.compile(r"\bignor\w*\s+(?:as\s+|todas\s+as\s+|suas\s+|essas\s+|qualquer\s+)?(?:regras|instrucoes|restricoes|guardrails|politicas|limites)\b"),
+    re.compile(r"\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:the\s+|your\s+)?(?:previous\s+|prior\s+)?(?:rules|instructions|guidelines)\b"),
+    re.compile(r"\b(?:eu\s+)?sou\s+(?:o\s+|a\s+)?(?:admin|administrador|administradora|desenvolvedor|dono|owner)\b"),
+    re.compile(r"(?:^|\s)/(?:admin|sudo|root)\b"),
+    re.compile(r"\bmodo\s+(?:admin|administrador|desenvolvedor|dev|deus|debug|sem\s+restricoes)\b"),
+    re.compile(r"\b(?:sem|desativ\w*|deslig\w*|burl\w*|contorn\w*|pul\w*)\s+(?:os\s+|as\s+)?(?:guardrails|regras|filtros|restricoes|travas)\b"),
+    re.compile(r"\b(?:jailbreak|bypass|dan\s+mode|developer\s+mode)\b"),
+    re.compile(r"\bfinja\s+(?:que|ser)\b|\bpretend\s+(?:to\s+be|you\s+are)\b"),
+    re.compile(r"\b(?:voce\s+agora\s+e|a\s+partir\s+de\s+agora\s+voce\s+e|act\s+as|you\s+are\s+now)\b"),
+    re.compile(r"\b(?:system\s+prompt|prompt\s+do\s+sistema|suas\s+instrucoes\s+internas)\b"),
+    re.compile(r"\bcp_framework_mode\b|\btrusted_mode\b"),
+]
+SETTER_INTENT_RES = [
+    re.compile(r"\b(?:problem\s*setter|modo\s+setter|modo\s+problem\s+setter)\b"),
+    re.compile(r"\b(?:stress\s*test\w*|testes?\s+de\s+estresse|estressar|estressa\s+(?:meu|minha))\b"),
+    re.compile(
+        r"\b(?:gera|gere|gerar|crie|criar|monte|montar|faca|fazer|quero|preciso\s+de)\s+"
+        r"(?:uns\s+|alguns\s+|os\s+|mais\s+)?(?:casos\s+de\s+teste|gerador(?:es)?\s+de\s+testes?)\b"
+    ),
+    re.compile(
+        r"\b(?:quero|vou|estou|preciso|gostaria\s+de|me\s+ajud\w+\s+a|ajuda\s+(?:a|para|pra))\s+"
+        r"(?:criar|criando|montar|montando|escrever|escrevendo|elaborar|elaborando|propor|inventar)\s+"
+        r"(?:um|uma|o|a|meu|minha)?\s*(?:proprio\s+|propria\s+|novo\s+|nova\s+)?(?:problema|questao|enunciado)\b"
+    ),
+    re.compile(r"\b(?:criar|escrever|elaborar|montar)\s+(?:meu|minha)\s+(?:proprio\s+|propria\s+)?(?:problema|questao|enunciado)\b"),
+    re.compile(r"\b(?:criei|escrevi|elaborei|inventei|bolei)\s+(?:um|uma|este|esse|o|meu)\s+(?:problema|enunciado|questao)\b"),
+    re.compile(r"\b(?:i\s+(?:want|need)\s+to\s+(?:create|write)|i\s+(?:wrote|created))\s+(?:my\s+own\s+|a\s+)?problem\b"),
+]
+# The user asks us to author a problem for them; we only recommend published ones.
+CREATE_PROBLEM_RES = [
+    re.compile(
+        r"\b(?:crie|cria|invente|inventa|gere|gera|faca|faz|elabore|elabora|monte|monta|escreva|escreve)\s+"
+        r"(?:pra\s+mim\s+|para\s+mim\s+)?(?:um|uma|uns|umas|outro|outra|\d+)\s+(?:novo\s+|nova\s+|novos\s+|novas\s+)?"
+        r"(?:problemas?|questao|questoes|exercicios?|enunciados?)\b"
+    ),
+    re.compile(
+        r"\b(?:criar|inventar|montar|elaborar|gerar)\s+(?:um|uma|uns|umas)\s+(?:problemas?|questao|questoes|exercicios?)\b"
+        r".{0,60}\b(?:praticar|treinar|resolver|pra\s+mim|para\s+mim)\b"
+    ),
+    re.compile(r"\b(?:create|make|invent|write|generate)\s+(?:me\s+)?(?:a|an|some|\d+)\s+(?:new\s+)?(?:problems?|exercises?)\b"),
+]
+OFF_TOPIC_RES = [
+    re.compile(
+        r"\b(?:escreva|escreve|redija|redigir|escrever|faca|faz|write|draft)\s+(?:me\s+|pra\s+mim\s+)?(?:um|uma|meu|minha|a|an|my)?\s*"
+        r"(?:texto|redacao|e-?mail|carta|artigo|poema|post|essay|letter|poem|cover\s+letter|curriculo|resume|tcc)\b"
+    ),
+    re.compile(r"\b(?:traduz|traduza|translate)\b"),
+]
+TOPIC_REQUEST_RE = re.compile(
+    r"\b(?:aprender|estudar|me\s+ensin[ae]|ensina-?me|praticar|treinar|learn|study|teach\s+me|practice)\s+"
+    r"(?:sobre\s+|a\s+respeito\s+de\s+|about\s+)?(?P<topic>[^.!?\n,;]{2,80})"
+)
+GENERIC_TOPIC_WORDS = {
+    "programacao", "competitiva", "competitive", "programming", "algoritmos", "algoritmo", "algorithms",
+    "algorithm", "cp", "maratona", "icpc", "codeforces", "obi", "ioi", "de", "do", "da", "dos", "das", "e",
+    "o", "a", "os", "as", "um", "uma", "mais", "isso", "isto", "esse", "este", "essa", "zero", "from",
+    "scratch", "tema", "temas", "assunto", "algo", "something", "again", "novo", "nova", "tudo", "problemas",
+    "problema", "exercicios", "problems", "problem", "exercises", "com", "voce", "aqui", "hoje", "agora",
+    "sobre", "the", "more", "this", "now", "today", "juntos", "para", "pra", "por", "onde", "comecar",
+    "como", "resolver", "programar", "code", "coding", "solve", "to", "how", "me", "um", "pouco", "bit",
+    "melhor", "better", "antes", "depois", "primeiro", "eles", "elas", "ele", "ela", "it", "them", "first",
+    "faceis", "medios", "dificeis", "easy", "medium", "hard", "veteranos", "outro", "outra", "coisa",
+}
+EXAMPLES_RE = re.compile(
+    r"(?:exemplos?|examples?|sample|entrada\s+de\s+exemplo|sa[ií]da\s+de\s+exemplo|"
+    r"(?:entrada|input)\s*(?:\d+\s*)?:[\s\S]{1,400}?(?:sa[ií]da|output)\s*(?:\d+\s*)?:)",
+    re.I,
+)
+VERDICT_CLAIM_RE = re.compile(
+    r"(?<!n[aã]o\s)(?<!not\s)\b(?:aceit[ao]\s+no\s+(?:juiz|codeforces)|accepted\s+(?:on|by)\s+(?:the\s+)?(?:judge|codeforces)|"
+    r"passa(?:ria)?\s+em\s+todos\s+os\s+testes|passes\s+all\s+tests)\b",
+    re.I,
+)
+LEARNING_INTENT_RES = [
+    re.compile(r"\b(?:quero|vamos|preciso|gostaria\s+de|bora)\s+(?:voltar\s+a\s+)?(?:aprender|estudar|treinar|praticar)\b"),
+    re.compile(r"\b(?:me\s+ensin[ae]|modo\s+(?:aprendizado|learning|estudo))\b"),
+    re.compile(r"\bvoltar\s+(?:para|pro|ao|a)\s+(?:o\s+)?(?:aprendizado|estudo|learning)\b"),
+]
+PRIVILEGE_CLAIM_RE = re.compile(
+    r"\bmodo\s+(?:admin|administrador|desenvolvedor|dev|sem\s+restri[cç][oõ]es)\s+(?:ativado|habilitado|liberado)\b"
+    r"|\b(?:regras|guardrails|restri[cç][oõ]es)\s+(?:desativad[ao]s|removid[ao]s|ignorad[ao]s)\b",
+    re.I,
+)
+
+
+def topic_scope(prompt: str) -> dict[str, Any]:
+    """Classify the requested study topic: catalog tags, generic (ask), or outside the tool."""
+    text = re.sub(r"```.*?(?:```|$)", " ", prompt, flags=re.S)
+    norm = normalize(text)
+    tags = resolve_tags(text)
+    if any(pattern.search(norm) for pattern in OFF_TOPIC_RES):
+        return {"status": "out_of_scope", "tags": tags, "topic": None, "topic_phrase": False}
+    match = TOPIC_REQUEST_RE.search(norm)
+    if tags:
+        return {"status": "catalog", "tags": tags, "topic": None, "topic_phrase": bool(match)}
+    if not match:
+        return {"status": "none", "tags": [], "topic": None, "topic_phrase": False}
+    topic = match.group("topic").strip()
+    words = [word for word in re.findall(r"[a-z0-9+#-]+", topic) if word not in GENERIC_TOPIC_WORDS]
+    if not words:
+        return {"status": "generic", "tags": [], "topic": topic, "topic_phrase": True}
+    return {"status": "out_of_scope", "tags": [], "topic": topic, "topic_phrase": True}
+
+
+def detect_intents(prompt: str) -> dict[str, Any]:
+    text = re.sub(r"```.*?(?:```|$)", " ", prompt, flags=re.S)
+    norm = normalize(text)
+    bypass = [match.group(0).strip() for pattern in BYPASS_RES for match in [pattern.search(norm)] if match]
+    create_problem = any(pattern.search(norm) for pattern in CREATE_PROBLEM_RES)
+    return {
+        "solution_request": any(pattern.search(norm) for pattern in SOLUTION_REQUEST_RES),
+        "bypass_attempt": bool(bypass),
+        "bypass_signals": bypass,
+        "create_problem_request": create_problem,
+        "setter_intent": not create_problem and any(pattern.search(norm) for pattern in SETTER_INTENT_RES),
+        "learning_intent": any(pattern.search(norm) for pattern in LEARNING_INTENT_RES),
+    }
+
+
+def resolve_mode(mode: str, intents: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    """Switch task mode on a clear implicit request; the manager adds the resume summary."""
+    if mode == "LEARNING" and intents["setter_intent"]:
+        return "PROBLEM_SETTER", {"from": "LEARNING", "to": "PROBLEM_SETTER", "trigger": "implicit"}
+    if mode == "PROBLEM_SETTER" and intents["learning_intent"] and not intents["setter_intent"]:
+        return "LEARNING", {"from": "PROBLEM_SETTER", "to": "LEARNING", "trigger": "implicit"}
+    return mode, None
 
 
 def extract_facts(prompt: str, session: dict[str, Any]) -> dict[str, Any]:
@@ -95,38 +239,45 @@ def extract_facts(prompt: str, session: dict[str, Any]) -> dict[str, Any]:
     has_statement = len(statement) >= 80
     has_constraints = len(constraints) >= 8 or bool(re.search(r"\b(?:n|m|q|t|k)\s*(?:<=|≤|<)\s*\d", prompt, re.I))
     has_code = bool(code.strip())
-    progress = (
-        bool(session.get("progress_seen"))
-        or bool(PSEUDOCODE_LABEL_RE.search(prompt))
-        or bool(PSEUDOCODE_LINES_RE.search(prompt))
-        or has_code
+    turn_has_attempt = bool(
+        PSEUDOCODE_LABEL_RE.search(prompt) or PSEUDOCODE_LINES_RE.search(prompt) or fenced
+        or (CODE_HINT_RE.search(prompt) and len(prompt) > 40)
     )
+    progress = bool(session.get("progress_seen")) or turn_has_attempt
     return {
         "problem_statement": statement,
         "constraints": constraints,
         "solution_code": code,
         "stress_hypothesis": hypothesis,
         "has_problem_statement": has_statement,
+        "has_examples": bool(EXAMPLES_RE.search(statement)),
         "has_constraints": has_constraints,
         "has_user_code": has_code,
         "has_stress_hypothesis": len(hypothesis) >= 8,
         "has_progress": progress,
+        "turn_has_attempt": turn_has_attempt,
+        "statement_in_turn": bool(statement_match),
     }
 
 
-def infer_template(mode: str, prompt: str, facts: dict[str, Any], session: dict[str, Any]) -> str:
+def infer_template(
+    mode: str, prompt: str, facts: dict[str, Any], session: dict[str, Any], intents: dict[str, Any] | None = None
+) -> str:
+    intents = intents or detect_intents(prompt)
     if mode == "LEARNING":
+        if intents["solution_request"] and facts["has_progress"]:
+            return "learning_solution"
         return "learning_progress" if facts["has_progress"] else "learning_start"
     if mode != "PROBLEM_SETTER":
         raise ValueError("mode precisa ser LEARNING ou PROBLEM_SETTER.")
-    if ASK_FULL_PROBLEM_RE.search(prompt) and not facts["has_problem_statement"]:
+    if (intents["create_problem_request"] or ASK_FULL_PROBLEM_RE.search(prompt)) and not facts["has_problem_statement"]:
         return "setter_refusal"
     if ASK_STRESS_METHOD_RE.search(prompt):
         return "setter_stress_intro"
+    has_required_inputs = (
+        facts["has_problem_statement"] and facts["has_constraints"] and facts["has_user_code"]
+    )
     if ASK_STRESS_RE.search(prompt):
-        has_required_inputs = (
-            facts["has_problem_statement"] and facts["has_constraints"] and facts["has_user_code"]
-        )
         if has_required_inputs and facts["has_stress_hypothesis"]:
             return "setter_stress_tests"
         if has_required_inputs:
@@ -134,18 +285,24 @@ def infer_template(mode: str, prompt: str, facts: dict[str, Any], session: dict[
         if not facts["has_user_code"] and not re.search(r"\b(ger|crie|quero|mande|me d[eê])\w*.{0,35}(casos?|testes|gerador)", prompt, re.I | re.S):
             return "setter_stress_intro"
         return "needs_stress_input"
-    has_required_inputs = (
-        facts["has_problem_statement"] and facts["has_constraints"] and facts["has_user_code"]
-    )
-    if has_required_inputs and facts["has_stress_hypothesis"] and session.get("stress_intro_shown"):
-        return "setter_stress_tests"
-    if has_required_inputs and facts["has_stress_hypothesis"]:
-        return "setter_stress_intro"
     if not facts["has_problem_statement"]:
         return "setter_refusal"
-    if not facts["has_constraints"] or not facts["has_user_code"]:
-        return "needs_stress_input"
-    return "setter_stress_intro"
+    if not (session.get("statement_reviewed") or session.get("stress_intro_shown")):
+        return "setter_statement_review"
+    if has_required_inputs and facts["has_stress_hypothesis"] and session.get("stress_intro_shown"):
+        return "setter_stress_tests"
+    if has_required_inputs:
+        return "setter_stress_intro"
+    return "setter_statement_review"
+
+
+def _blocked(reason: str, language: str, common: dict[str, Any], **values: Any) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        **common,
+        "reason": reason,
+        "message": message(reason, language, **values) + "\n\n" + FLOW[language],
+    }
 
 
 def preflight(request: dict[str, Any]) -> dict[str, Any]:
@@ -159,34 +316,65 @@ def preflight(request: dict[str, Any]) -> dict[str, Any]:
     session = request.get("session", {})
     if not isinstance(session, dict):
         session = {}
+    language = detect_language(prompt, str(session.get("language") or "pt-BR"))
+    intents = detect_intents(prompt)
+    mode, mode_transition = resolve_mode(mode, intents)
+    if mode_transition:
+        # The manager pauses the previous mode; its attempt code must not carry over.
+        session = {**session, "solution_code": "", "progress_seen": False}
     facts = extract_facts(prompt, session)
-    template_id = infer_template(mode, prompt, facts, session)
-    if template_id == "needs_stress_input":
-        missing = []
-        if not facts["has_problem_statement"]:
-            missing.append("enunciado completo")
-        if not facts["has_constraints"]:
-            missing.append("limites/restrições")
-        if not facts["has_user_code"]:
-            missing.append("sua solução em código")
-        return {
-            "status": "needs_input",
-            "mode": mode,
-            "trusted_mode": trusted_mode,
-            "template_id": template_id,
-            "missing": missing,
-            "facts": facts,
-            "message": "Para gerar testes de estresse, envie " + ", ".join(missing) + ".",
-        }
-    return {
-        "status": "ready",
+    catalog = load_catalog()
+    problem_refs = find_problem_refs(prompt, catalog)
+    scope = (
+        {"status": "none", "tags": [], "topic": None, "topic_phrase": False}
+        if facts["statement_in_turn"] or facts["turn_has_attempt"]
+        else topic_scope(prompt)
+    )
+    template_id = infer_template(mode, prompt, facts, session, intents)
+    similar = None
+    if mode == "PROBLEM_SETTER" and facts["has_problem_statement"]:
+        similar = find_similar_problems(
+            prompt if facts["statement_in_turn"] else facts["problem_statement"], catalog
+        )
+    common = {
         "mode": mode,
         "trusted_mode": trusted_mode,
         "template_id": template_id,
         "facts": facts,
+        "intents": intents,
+        "mode_transition": mode_transition,
+        "similar_problems": similar,
+        "problem_refs": problem_refs,
+        "scope": scope,
+        "language": language,
+    }
+    if scope["status"] == "out_of_scope":
+        examples = ", ".join(["dp", "graphs", "binary search", "greedy", "number theory"])
+        return _blocked("out_of_scope", language, common, examples=examples)
+    if mode == "LEARNING" and facts["statement_in_turn"]:
+        return _blocked("statement_in_learning", language, common)
+    if template_id == "learning_solution" and not (problem_refs or session.get("focus_problem")):
+        return {"status": "needs_input", **common, "missing": ["focus_problem"],
+                "message": message("needs_focus_problem", language)}
+    if template_id == "needs_stress_input":
+        missing = []
+        if not facts["has_problem_statement"]:
+            missing.append(message("missing_statement", language))
+        if not facts["has_constraints"]:
+            missing.append(message("missing_constraints", language))
+        if not facts["has_user_code"]:
+            missing.append(message("missing_code", language))
+        return {
+            "status": "needs_input",
+            **common,
+            "missing": missing,
+            "message": message("needs_stress_input", language, missing="; ".join(missing)),
+        }
+    return {
+        "status": "ready",
+        **common,
         "progress_stage": "pseudocode_or_code" if facts["has_progress"] else "none",
     }
-
 
 def _contains_final_solution(candidate: str) -> bool:
     return bool(re.search(r"```", candidate) or CODE_HINT_RE.search(candidate))
@@ -197,7 +385,9 @@ def _deterministic_checks(request: dict[str, Any]) -> list[dict[str, Any]]:
     template_id = str(request.get("template_id", ""))
     facts = request.get("facts", {})
     checks: list[dict[str, Any]] = []
-    if template_id in {"learning_start", "learning_progress", "setter_refusal", "setter_stress_intro"}:
+    if template_id in {
+        "learning_start", "learning_progress", "setter_refusal", "setter_stress_intro", "setter_statement_review",
+    }:
         code_found = _contains_final_solution(candidate)
         checks.append({"id": "no_final_code", "passed": not code_found})
     else:
@@ -241,17 +431,36 @@ def _deterministic_checks(request: dict[str, Any]) -> list[dict[str, Any]]:
                 checks.append({"id": "generator_language_tagged", "passed": False})
     if template_id == "setter_refusal":
         formal_sections = re.findall(
-            r"(?im)^\s*(?:#{1,4}\s*|\*\*)?(?:problem\s+statement|statement|enunciado|input(?:\s+format)?|output(?:\s+format)?|constraints?|limites?|exemplo|example)\b",
+            r"(?im)^\s*(?:#{1,4}\s*|\*\*)?(?:problem\s+statement|statement|enunciado|input(?:\s+format)?|output(?:\s+format)?|"
+            r"entrada|sa[ií]da|constraints?|limites?|exemplo|example)\b",
             candidate,
         )
+        # The starter text may show section headings, but only with placeholders to fill in.
+        has_placeholders = len(re.findall(r"\[[^\]\n]{3,}\]|<[^>\n]{3,}>", candidate)) >= max(2, len(formal_sections) // 2)
         invented_prompt = bool(
-            re.search(r"(?:sample\s+input|entrada\s+de\s+exemplo|input\s*:)", candidate, re.I)
-            or len(formal_sections) >= 2
+            (len(formal_sections) >= 2 and not has_placeholders)
+            or re.search(r"(?:sample\s+input|entrada\s+de\s+exemplo|input)\s*:?\s*\n\s*(?:```\w*\n)?\s*-?\d+(?:\s+-?\d+)*\s*\n", candidate, re.I)
         )
         checks.append({"id": "no_ready_problem_authored", "passed": not invented_prompt})
+    if template_id == "learning_solution":
+        checks.append({"id": "solution_code_present", "passed": bool(re.search(r"```\w*\n.+?```", candidate, re.S))})
+        checks.append({"id": "no_unverified_verdict", "passed": not VERDICT_CLAIM_RE.search(candidate)})
+    reference_code = str(request.get("reference_code") or "")
+    if reference_code and template_id != "learning_solution":
+        lines = {
+            re.sub(r"\s+", " ", line).strip()
+            for line in reference_code.splitlines()
+            if len(re.sub(r"\s+", "", line)) >= 12
+        }
+        flattened = re.sub(r"\s+", " ", candidate)
+        leaked = sorted(line for line in lines if line in flattened)
+        checks.append({"id": "no_reference_leak", "passed": len(leaked) < 3, "leaked_lines": len(leaked)})
     allowed_urls = set(request.get("allowed_source_urls", []))
-    unsupported_urls = [url for url in URL_RE.findall(candidate) if url.rstrip(".,") not in allowed_urls]
+    unsupported_urls = [
+        url for url in URL_RE.findall(candidate) if url.rstrip(".,;:!?'\"") not in allowed_urls
+    ]
     checks.append({"id": "source_urls_grounded", "passed": not unsupported_urls, "unsupported": unsupported_urls})
+    checks.append({"id": "no_privilege_claim", "passed": not PRIVILEGE_CLAIM_RE.search(candidate)})
     return checks
 
 

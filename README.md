@@ -8,6 +8,7 @@ Project-owned skills for a competitive-programming learning workflow. The manage
 | `competitive-programming-coach` | Study materials, progressive hints, sourced practice problems, and stress tests for user-supplied code | Teaching and test artifacts; no replacement solution code |
 | `competitive-programming-solver` | Locate and reproduce a verified solution for the exact problem | Code only |
 | `competitive-programming-evaluator` | Score a candidate against the manager's supplied template | Structured scores only; no advice or rewrite |
+| `competitive-programming-originality` | Point out published Codeforces problems similar or identical to a Problem Setter statement | Short neutral notice; never an accusation |
 
 ## Modes and routing
 
@@ -42,7 +43,9 @@ The runtime separates the source collector, response-template renderer, and guar
 | Guardrails | Enforce USER/ADMIN configuration, learning/problem-setter gates, response checks, and score-only evaluation with Jev when configured | `python -m cp_framework.services.guardrails` |
 | Session app | Maintain one in-memory conversation and launch each service in a separate child process | `python -m cp_framework.app` |
 
-Sources stores snapshots under `data/sources/` (or `CP_DATA_DIR`): Codeforces problem metadata, the cp-algorithms article index, and requested Markdown articles. The application syncs the catalogs on first use if local snapshots are missing. Article content is fetched on demand. The data directory is git-ignored.
+Sources stores snapshots under `data/sources/` (or `CP_DATA_DIR`): Codeforces problem metadata, the tag → rating catalog (`codeforces_catalog.json`), the cp-algorithms article index, and requested Markdown articles. The application syncs the catalogs on first use if local snapshots are missing; Codeforces calls are throttled to one request every 2 seconds. Article content is fetched on demand. The data directory is git-ignored.
+
+The manager selects practice problems locally from the catalog (`cp_framework/catalog.py`): topics in Portuguese or English map to Codeforces tags, and combinations require every tag. Bands are easy 800–999, medium 1000–1499, hard 1500–2099, and veteran 2100+ (Problem Setter references only). By default the two most-solved unseen problems per band are shown, never more than three per band and topic; "mais problemas" continues until the catalog runs out. If a band is short, the rating range widens (±100, ±200) and then accepts partial tag matches; the template tells the user what was adjusted.
 
 ### Run a session
 
@@ -67,8 +70,22 @@ Session commands:
 - `/learn <topic>` selects Aprendizado; `/setter <topic>` selects Problem Setter.
 - `/difficulty <range>` records the requested rating range.
 - `/statement <text>`, `/constraints <limits>`, and `/hypothesis <failure idea>` add Problem Setter context. Before generating stress cases, the user must also state a plausible failure/performance hypothesis; if they do not know one yet, Templates first teaches stress dimensions and asks them to choose one.
-- `/sync` refreshes the local API snapshots; `/help` lists commands; `/quit` ends the session.
+- `/sync` refreshes the local API snapshots; `/help` lists commands and the intended flow; `/quit` ends the session.
+- `/retomar` (`/resume`) returns to the paused stage of the other mode; `/consolidar` (`/consolidate`) writes a summary of topics, problems, and code snippets to `data/sessions/`; `/recomecar` (`/restart`) clears the chat and keeps that summary as initial context. `python -m cp_framework.app --contexto <file>` starts a new chat from a saved summary. The app warns once when the estimated context passes 80% of `CP_CONTEXT_BUDGET_TOKENS` (default 12000).
 - For stress cases, include a complete `Problem statement:`, `Constraints:`, and your own fenced solution code in the conversation. If any are missing, the manager does not generate cases.
+- Switching modes in free text ("agora quero criar meu próprio problema", "quero estudar busca binária antes") pauses the current stage and states where the user stopped. A new topic restarts the flow of the current mode. Requests for an immediate solution and attempts to change rules or claim admin access are detected in Guardrails; they never change the trusted profile.
+- The Solver analyzes each problem internally on the first interaction (structured JSON). Templates use it for hints, test oracles, and statement inconsistencies; the learner receives the code only after showing pseudocode and asking for it.
+- Out-of-scope requests and statements pasted in Aprendizado get the intended flow and a recommendation to use another chat. Answers follow the user's language (Portuguese or English).
+- In Problem Setter, a short notice points out very similar or identical published Codeforces problems; the flow is not blocked.
+
+Template examples ("Templates testados para utilizar no chat") and the decisions behind each behavior are in [docs/template-use-cases.md](docs/template-use-cases.md).
+
+### Tests
+
+```powershell
+python -m unittest discover -s tests -t .                       # offline: catalog, guardrails, templates, use-case simulations
+$env:CP_LIVE_TESTS='1'; python -m unittest tests.test_sources_live  # hits Codeforces and GitHub
+```
 
 ### Run a service directly
 
@@ -84,5 +101,5 @@ Templates accepts `action: "render"`, a `template_id`, request/profile fields, a
 
 - JEV makes typed relevance judgments over source records in Templates. A separate chat model writes the prose response. Guardrails asks JEV for rubric scores; JEV does not write a response or make the application's final policy decision.
 - Guardrails checks are deterministic where possible. JEV scores are measurements, not proof of factual correctness. If JEV is unavailable, a deterministic-policy-approved candidate is marked `not_scored`; no score or evaluator pass is claimed.
-- This first implementation supports learning and user-authored Problem Setter workflows. It does not yet retrieve competitor submissions, verify online judge verdicts, run submitted code, or implement a Solver source-reproduction pipeline.
+- This first implementation supports learning and user-authored Problem Setter workflows. The Solver is a model-generated reference (structured JSON), not a source-reproduction pipeline: it does not retrieve competitor submissions, verify online judge verdicts, or run code, so its solutions and example checks are labeled as unverified.
 - The session is in memory and ends with the application process. Service CLIs are stateless between calls. Administrator identity, rate limits, model budgets, retries, and network permissions need trusted host configuration before deployment.

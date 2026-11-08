@@ -5,11 +5,12 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
 from ..config import DATA_ROOT, HTTP_TIMEOUT_SECONDS
@@ -20,13 +21,33 @@ CODEFORCES_URL = "https://codeforces.com/api/problemset.problems"
 GITHUB_REPO_URL = "https://api.github.com/repos/cp-algorithms/cp-algorithms"
 GITHUB_API_ROOT = "https://api.github.com/repos/cp-algorithms/cp-algorithms"
 MAX_RESPONSE_BYTES = 45_000_000
+CODEFORCES_MIN_INTERVAL_SECONDS = 2.0
+CODEFORCES_RATE_STAMP = ".codeforces_last_request"
+EXCLUDED_CATALOG_TAGS = {"*special"}
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def wait_codeforces_slot() -> None:
+    """Codeforces allows 1 request / 2 s; the stamp file spans service processes."""
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    stamp = DATA_ROOT / CODEFORCES_RATE_STAMP
+    try:
+        last = float(stamp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        last = 0.0
+    delay = last + CODEFORCES_MIN_INTERVAL_SECONDS - time.time()
+    if delay > 0:
+        time.sleep(min(delay, CODEFORCES_MIN_INTERVAL_SECONDS))
+    stamp.write_text(repr(time.time()), encoding="utf-8")
+
+
 def fetch_api(url: str, accept: str = "application/json") -> tuple[bytes, dict[str, str]]:
+    host = urlparse(url).hostname or ""
+    if host == "codeforces.com" or host.endswith(".codeforces.com"):
+        wait_codeforces_slot()
     headers = {
         "Accept": accept,
         "User-Agent": "competitive-programming-learning-framework/0.1",
@@ -99,6 +120,56 @@ def sync_codeforces() -> dict[str, Any]:
         "fetched_at": utc_now(),
         "record_count": len(records),
         "problems": records,
+    }
+
+
+def build_codeforces_catalog(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Index problems by tag -> rating -> ids; problems are stored once by id."""
+    problems: dict[str, dict[str, Any]] = {}
+    index: dict[str, dict[str, list[str]]] = {}
+    skipped = {"without_tags": 0, "without_rating": 0}
+    for record in snapshot.get("problems", []):
+        tags = sorted(
+            {tag for tag in record.get("tags") or [] if tag not in EXCLUDED_CATALOG_TAGS}
+        )
+        rating = record.get("rating")
+        if not tags:
+            skipped["without_tags"] += 1
+            continue
+        if not isinstance(rating, int):
+            skipped["without_rating"] += 1
+            continue
+        problem_id = record["id"]
+        problems[problem_id] = {
+            "contest_id": record.get("contest_id"),
+            "index": record.get("index"),
+            "title": record.get("title", ""),
+            "rating": rating,
+            "tags": tags,
+            "solved_count": record.get("solved_count"),
+            "url": record.get("url"),
+        }
+        for tag in tags:
+            index.setdefault(tag, {}).setdefault(str(rating), []).append(problem_id)
+    for by_rating in index.values():
+        for ids in by_rating.values():
+            ids.sort(key=lambda pid: problems[pid]["solved_count"] or 0, reverse=True)
+    sorted_index = {
+        tag: dict(sorted(by_rating.items(), key=lambda item: int(item[0])))
+        for tag, by_rating in sorted(index.items())
+    }
+    return {
+        "source": snapshot.get("source"),
+        "source_url": snapshot.get("source_url"),
+        "fetched_at": snapshot.get("fetched_at"),
+        "built_at": utc_now(),
+        "problem_count": len(problems),
+        "skipped": skipped,
+        "excluded_tags": sorted(EXCLUDED_CATALOG_TAGS),
+        "tag_count": len(sorted_index),
+        "bucket_count": sum(len(by_rating) for by_rating in sorted_index.values()),
+        "index": sorted_index,
+        "problems": problems,
     }
 
 
@@ -192,17 +263,22 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
     action = request.get("action")
     if action == "sync":
         codeforces = sync_codeforces()
+        catalog = build_codeforces_catalog(codeforces)
         article_index = sync_cp_algorithms_index()
         cf_path = write_snapshot("codeforces_problems.json", codeforces)
+        catalog_path = write_snapshot("codeforces_catalog.json", catalog)
         index_path = write_snapshot("cp_algorithms_index.json", article_index)
         return {
             "status": "ok",
             "snapshots": {
                 "codeforces": str(cf_path),
+                "codeforces_catalog": str(catalog_path),
                 "cp_algorithms_index": str(index_path),
             },
             "counts": {
                 "codeforces_problems": codeforces["record_count"],
+                "codeforces_catalog_problems": catalog["problem_count"],
+                "codeforces_catalog_buckets": catalog["bucket_count"],
                 "cp_algorithms_articles": article_index["record_count"],
             },
         }
