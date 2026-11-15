@@ -55,28 +55,32 @@ The manager selects practice problems locally from the catalog (`cp_framework/ca
 
 ### Run a session
 
-Use Python 3.10 or later. The default profile is the local Ollama model `llama3.2:1b`, accessed through the official [`ollama-python`](https://github.com/ollama/ollama-python) SDK. Ollama must be installed and running; no API key is needed. Other models can be selected from `models.json`.
+Use Python 3.10 or later. The default profile is the local Ollama model `llama3.2`, accessed through the official [`ollama-python`](https://github.com/ollama/ollama-python) SDK. The `ollama-llama3.2-1b` profile remains available for `llama3.2:1b`. Other models can be selected from `models.json`.
 
-1. Install Ollama, then download the model:
+1. If `make` is not installed on Windows, install GNU Make once:
 
    ```powershell
-   ollama pull llama3.2:1b
+   winget install --id GnuWin32.Make --exact --accept-source-agreements --accept-package-agreements
    ```
 
-2. Install the project and check the connection (the check sends one chat and one JSON request to Ollama):
+   Reopen the terminal so `make` is added to `PATH`.
+
+2. Install the project dependencies and native tools:
 
    ```powershell
-   uv sync
+   make dependencies
+   ```
+
+   This syncs the Ollama and GitHub Copilot Python SDKs and installs Glow and Ollama via Winget when they are not already on `PATH`. Reopen the terminal after installation. Download the default model once with `ollama pull llama3.2`.
+
+3. Check the connection (the check sends one chat and one JSON request to Ollama), then start the terminal chat:
+
+   ```powershell
    uv run python -m cp_framework.app --check
-   ```
-
-3. Start the terminal chat:
-
-   ```powershell
    uv run python -m cp_framework.app
    ```
 
-   Inside the chat, `/model` lists profiles and `/model <profile>` switches the model for the next turns. Other profiles include free OpenRouter models and GitHub Copilot.
+   If Glow is unavailable, the app warns and displays the Markdown source as plain text. The timestamp is printed after the user presses Enter, and each Manager response is timestamped when it finishes. Inside the chat, `/model` lists profiles, `/model <profile>` switches the model for the next turns, and `/sair` (`/exit` or `/quit`) returns to the terminal.
 
 Manage profiles with `uv run python -m cp_framework.models`: `list`, `search [text] [--json] [--include-paid]` (OpenRouter catalog, free models by default), and `add <name> --model <id> [--provider groq|gemini|ollama|custom ...] [--free-tier] [--default]`. For OpenRouter, `add` checks that the model exists and fills its price and JSON support from the public model list. Other providers (Groq, Gemini, Mistral, DeepSeek, Ollama, any custom base URL) use presets for the endpoint and key variable.
 
@@ -90,8 +94,8 @@ Copilot models are used through the official GitHub Copilot SDK, as profiles wit
 
 ```powershell
 winget install GitHub.cli; gh auth login --web       # once: your GitHub user with Copilot (gho_ token in the keyring)
-uv run --no-project --with github-copilot-sdk python -m cp_framework.models copilot                       # models + prices on your account
-uv run --no-project --with github-copilot-sdk python -m cp_framework.models add copilot-gpt-6-luna --provider copilot --model gpt-6-luna
+uv run python -m cp_framework.models copilot                       # models + prices on your account
+uv run python -m cp_framework.models add copilot-gpt-6-luna --provider copilot --model gpt-6-luna
 ```
 
 The token is resolved from `COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token`; classic `ghp_` tokens are rejected. `models add` reads the model's per-token prices from the API. The billed cost comes from the usage the SDK reports (`nano_aiu × 10⁻¹¹` USD, cache discounts included).
@@ -99,21 +103,21 @@ The token is resolved from `COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `gh aut
 To start an interactive terminal session using Luna 6, explicitly allow paid usage for this run:
 
 ```powershell
-uv run --no-project --with github-copilot-sdk python -m cp_framework.app --model copilot-gpt-6-luna --allow-paid
+uv run python -m cp_framework.app --model copilot-gpt-6-luna --allow-paid
 ```
 
-The app prompts with `Você>`; type `/help` to see the learning commands and `/quit` to end the session. To check Copilot authentication, SDK availability, and model connectivity before chatting, add `--check` to the same command (keeping both `--model copilot-gpt-6-luna` and `--allow-paid`).
+The app prompts with `Você>`; type `/help` to see the learning commands and `/sair` (`/exit` or `/quit`) to end the session. To check Copilot authentication, SDK availability, and model connectivity before chatting, add `--check` to the same command (keeping both `--model copilot-gpt-6-luna` and `--allow-paid`).
 
 ### Benchmark
 
 `python -m cp_framework.benchmark` runs 18 use-case scenarios (from [docs/template-use-cases.md](docs/template-use-cases.md)) through the real pipeline for each model profile and prompt variant, with objective checks on the final answer, a spending cap, resume by run id, and full transcripts:
 
 ```powershell
-uv run --no-project python -m cp_framework.benchmark scenarios
-uv run --no-project python -m cp_framework.benchmark estimate --profiles copilot-gpt-6-luna,copilot-claude-sonnet-5.5 --variants full,compact
-uv run --no-project --with github-copilot-sdk python -m cp_framework.benchmark run --profiles copilot-gpt-6-luna --variants full,compact --allow-paid --budget-usd 2
-uv run --no-project python -m cp_framework.benchmark rescore <run-id>                 # re-evaluate checks from transcripts, no model calls
-uv run --no-project python -m cp_framework.benchmark report <name> --merge run-a,run-b  # one report for runs executed in parallel
+uv run python -m cp_framework.benchmark scenarios
+uv run python -m cp_framework.benchmark estimate --profiles copilot-gpt-6-luna,copilot-claude-sonnet-5.5 --variants full,compact
+uv run python -m cp_framework.benchmark run --profiles copilot-gpt-6-luna --variants full,compact --allow-paid --budget-usd 2
+uv run python -m cp_framework.benchmark rescore <run-id>                 # re-evaluate checks from transcripts, no model calls
+uv run python -m cp_framework.benchmark report <name> --merge run-a,run-b  # one report for runs executed in parallel
 ```
 
 Each run writes `data/benchmarks/<run-id>/` with `results.jsonl`, `usage.jsonl`, `sessions/`, `summary.md`, and `report.html`, which has dependency-free SVG charts: cost × quality with the Pareto frontier, score heatmap per scenario, cost per scenario and per fully correct scenario, tokens, model time, and one cost/result chart per use case. `--judge <profile>` adds LLM rubric scores.
@@ -127,7 +131,7 @@ Session commands:
 - `/learn <topic>` selects Aprendizado; `/setter <topic>` selects Problem Setter.
 - `/difficulty <range>` records the requested rating range.
 - `/statement <text>`, `/constraints <limits>`, and `/hypothesis <failure idea>` add Problem Setter context. Before generating stress cases, the user must also state a plausible failure/performance hypothesis; if they do not know one yet, Templates first teaches stress dimensions and asks them to choose one.
-- `/sync` refreshes the local API snapshots; `/help` lists commands and the intended flow; `/quit` ends the session.
+- `/sync` refreshes the local API snapshots; `/help` lists commands and the intended flow; `/sair` (`/exit` or `/quit`) ends the session and returns to the terminal.
 - `/retomar` (`/resume`) returns to the paused stage of the other mode; `/consolidar` (`/consolidate`) writes a summary of topics, problems, and code snippets to `data/sessions/`; `/recomecar` (`/restart`) clears the chat and keeps that summary as initial context. `python -m cp_framework.app --contexto <file>` starts a new chat from a saved summary. The app warns once when the estimated context passes 80% of `CP_CONTEXT_BUDGET_TOKENS` (default 12000).
 - For stress cases, include a complete `Problem statement:`, `Constraints:`, and your own fenced solution code in the conversation. If any are missing, the manager does not generate cases.
 - Switching modes in free text ("agora quero criar meu próprio problema", "quero estudar busca binária antes") pauses the current stage and states where the user stopped. A new topic restarts the flow of the current mode. Requests for an immediate solution and attempts to change rules or claim admin access are detected in Guardrails; they never change the trusted profile.

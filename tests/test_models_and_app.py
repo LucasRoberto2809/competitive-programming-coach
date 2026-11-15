@@ -161,9 +161,11 @@ class ProfileTest(ProviderCase):
         config = models.load_config(REPOSITORY_ROOT / "models.json")
         profile = models.load_profiles(REPOSITORY_ROOT / "models.json")[config["default"]]
         self.assertEqual((profile.name, profile.provider, profile.model),
-                         ("ollama-llama3.2-1b", "ollama", "llama3.2:1b"))
+                         ("ollama-llama3.2", "ollama", "llama3.2"))
         self.assertEqual(profile.endpoint, "http://localhost:11434")
         self.assertTrue(profile.is_free())
+        self.assertEqual(models.load_profiles(REPOSITORY_ROOT / "models.json")["ollama-llama3.2-1b"].model,
+                         "llama3.2:1b")
 
     def test_resolution_order(self) -> None:
         self.assertEqual(models.resolve_profile().name, "fake")
@@ -228,6 +230,23 @@ class ProfileTest(ProviderCase):
         for key in ["FAKE_API_KEY", "OTHER_KEY"]:
             self.assertNotIn(key, captured["sources"])
         self.assertEqual(captured["sources"]["GITHUB_TOKEN"], "gh")
+
+    def test_ollama_services_have_no_outer_timeout(self) -> None:
+        captured: dict[str, float | None] = {}
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+            captured[cmd[-1].rsplit(".", 1)[-1]] = kwargs["timeout"]
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"status": "ok"}', stderr="")
+
+        with mock.patch.dict(os.environ, {"CP_LLM_PROFILE": "local", "CP_EVALUATOR_PROFILE": "local"}), \
+                mock.patch.object(app.subprocess, "run", fake_run):
+            app.run_service("templates", {})
+            app.run_service("guardrails", {})
+            app.run_service("sources", {})
+
+        self.assertIsNone(captured["templates"])
+        self.assertIsNone(captured["guardrails"])
+        self.assertEqual(captured["sources"], app.SERVICE_TIMEOUT_SECONDS)
 
     def test_openrouter_fields_and_cli(self) -> None:
         catalog = {
@@ -310,9 +329,11 @@ class ClientTest(ProviderCase):
         )
 
     def test_ollama_connection_error_is_actionable(self) -> None:
+        captured: dict[str, Any] = {}
+
         class FakeOllamaClient:
-            def __init__(self, **_kwargs: Any) -> None:
-                pass
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
 
             def __enter__(self) -> FakeOllamaClient:
                 return self
@@ -327,6 +348,7 @@ class ClientTest(ProviderCase):
         with mock.patch.dict(sys.modules, {"ollama": fake_ollama}):
             with self.assertRaisesRegex(ProviderError, "Inicie o Ollama"):
                 ChatCompletionsClient("local").complete("s", "u")
+        self.assertIsNone(captured["timeout"])
 
     def test_request_shape_auth_and_usage_log(self) -> None:
         reply = ChatCompletionsClient("fake").complete("sistema", "usuário", purpose="template:learning_start")
@@ -473,6 +495,45 @@ class CheckTest(ProviderCase):
         self.assertIn("no-model | - |", report)
 
 
+class TerminalOutputTest(unittest.TestCase):
+    def test_banner_uses_compact_version_for_narrow_terminals(self) -> None:
+        banner = app.startup_banner(100)
+        self.assertIn("COMPETITIVE PROGRAMMING COACH", banner)
+        self.assertLessEqual(max(map(len, banner.splitlines())), 100)
+        self.assertEqual(app.startup_banner(162), app.ASCII_BANNER)
+
+    def test_render_markdown_passes_source_to_glow_with_terminal_width(self) -> None:
+        completed = subprocess.CompletedProcess(["glow"], 0, stdout="", stderr="")
+        with mock.patch.object(app.shutil, "get_terminal_size", return_value=os.terminal_size((88, 24))), \
+                mock.patch.object(app.subprocess, "run", return_value=completed) as run:
+            app.render_markdown("**texto**", "glow")
+
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ["glow", "-w", "88", "-"])
+        self.assertEqual(kwargs["input"], "**texto**")
+        self.assertEqual(kwargs["stderr"], subprocess.PIPE)
+        self.assertNotIn("stdout", kwargs)
+
+    def test_render_markdown_falls_back_to_plain_text_without_glow(self) -> None:
+        with mock.patch("builtins.print") as printed:
+            app.render_markdown("**texto**", None)
+
+        printed.assert_called_once_with("**texto**", end="")
+
+    def test_glow_failure_is_reported_and_falls_back_to_plain_text(self) -> None:
+        failed = subprocess.CompletedProcess(["glow"], 1, stdout="", stderr="falha")
+        with mock.patch.object(app.subprocess, "run", return_value=failed), \
+                mock.patch("builtins.print") as printed, \
+                mock.patch("sys.stderr") as stderr:
+            app.render_markdown("**texto**", "glow")
+
+        self.assertEqual(printed.call_count, 2)
+        self.assertIn("Glow falhou", printed.call_args_list[0].args[0])
+        self.assertIn("file", printed.call_args_list[0].kwargs)
+        printed.assert_called_with("**texto**", end="")
+        self.assertIs(printed.call_args_list[0].kwargs["file"], stderr)
+
+
 class EndToEndChatTest(ProviderCase):
     """Starts the real app (with real service subprocesses) and chats through stdin."""
 
@@ -499,7 +560,11 @@ class EndToEndChatTest(ProviderCase):
         result = self.run_app(["/model", "/learn dp", "quero dicas do 1950D", "/quit"], "--model", "fake")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("modelo fake (fake/model:free)", result.stdout)
+        self.assertIn("COMPETITIVE PROGRAMMING COACH", result.stdout)
         self.assertIn("* fake: custom | fake/model:free | gratuito", result.stdout)
+        self.assertIn("\nVocê> ", result.stdout)
+        self.assertRegex(result.stdout, r"\[\d{2}:\d{2}:\d{2}\] Mensagem enviada\.")
+        self.assertRegex(result.stdout, r"\[\d{2}:\d{2}:\d{2}\] Manager>")
         self.assertIn(MODEL_REPLY, result.stdout)
         self.assertIn("Sessão encerrada.", result.stdout)
         purposes = [record["purpose"] for record in self.usage()]
@@ -513,6 +578,12 @@ class EndToEndChatTest(ProviderCase):
         self.assertIn("Modelo trocado para fake-plain (fake/plain:free).", result.stdout)
         self.assertIn("CP_ALLOW_PAID=1", result.stdout)
         self.assertEqual(self.provider.requests[-1]["body"]["model"], "fake/plain:free")
+
+    def test_sair_command_returns_to_terminal_without_model_call(self) -> None:
+        result = self.run_app(["/sair"], "--model", "fake")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Sessão encerrada.", result.stdout)
+        self.assertEqual(self.provider.requests, [])
 
     def test_startup_refuses_paid_or_unknown_profiles(self) -> None:
         for name, message in [("paid", "não é gratuito"), ("nope", "não existe")]:

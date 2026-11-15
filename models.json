@@ -1,6 +1,12 @@
 {
-  "default": "ollama-llama3.2-1b",
+  "default": "ollama-llama3.2",
   "profiles": {
+    "ollama-llama3.2": {
+      "provider": "ollama",
+      "model": "llama3.2",
+      "json_mode": true,
+      "notes": "Ollama local via SDK oficial ollama-python"
+    },
     "ollama-llama3.2-1b": {
       "provider": "ollama",
       "model": "llama3.2:1b",

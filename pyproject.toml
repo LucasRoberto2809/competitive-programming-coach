@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Separated Python services for competitive-programming learning and Problem Setter workflows"
 requires-python = ">=3.10"
 dependencies = [
+    "github-copilot-sdk>=0.1.25",
     "ollama>=0.4.7",
 ]
 

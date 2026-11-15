@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -44,12 +45,33 @@ SERVICE_MODULES = {
     "templates": "cp_framework.services.templates",
     "guardrails": "cp_framework.services.guardrails",
 }
+ASCII_BANNER = r"""   ___                           _   _ _   _               ___                                               _
+  / __\___  _ __ ___  _ __   ___| |_(_) |_(_)_   _____    / _ \_ __ ___   __ _ _ __ __ _ _ __ ___  _ __ ___ (_)_ __   __ _    /\  /\__ _ _ __ _ __   ___  ___ ___
+ / /  / _ \| '_ ` _ \| '_ \ / _ \ __| | __| \ \ / / _ \  / /_)/ '__/ _ \ / _` | '__/ _` | '_ ` _ \| '_ ` _ \| | '_ \ / _` |  / /_/ / _` | '__| '_ \ / _ \/ __/ __|
+/ /__| (_) | | | | | | |_) |  __/ |_| | |_| |\ V /  __/ / ___/| | | (_) | (_| | | | (_| | | | | | | | | | | | | | | (_| | / __  / (_| | |  | | | |  __/\__ \__ \
+\____\___/|_| |_| |_| .__/ \___|\__|_| \__|_| \_/ \___| \/    |_|  \___/ \__, |_| \__,_|_| |_| |_|_| |_| |_|_|_|_|\__, | \/ /_/ \__,_|_|  |_| |_|\___||___/___/
+                     |_|                                                 |___/                                       |___/"""
 LEARNING_STATE_KEYS = ("topic", "topic_tags", "current_problems", "problem_plan", "progress_seen", "focus_problem", "solution_code")
 SETTER_STATE_KEYS = (
     "topic", "topic_tags", "current_problems", "problem_plan", "problem_statement", "constraints",
     "solution_code", "stress_hypothesis", "stress_intro_shown", "statement_reviewed",
 )
 SETTER_TEMPLATES_WITH_SOLVER = {"setter_statement_review", "setter_stress_intro", "setter_stress_tests"}
+
+
+def startup_banner(width: int) -> str | None:
+    if max(map(len, ASCII_BANNER.splitlines())) <= width:
+        return ASCII_BANNER
+    return None
+
+
+def service_timeout(name: str) -> float | None:
+    if name == "templates" and resolve_profile().provider == "ollama":
+        return None
+    evaluator_profile = os.environ.get("CP_EVALUATOR_PROFILE") if name == "guardrails" else None
+    if evaluator_profile and resolve_profile(evaluator_profile).provider == "ollama":
+        return None
+    return SERVICE_TIMEOUT_SECONDS
 
 
 def run_service(
@@ -112,7 +134,7 @@ def run_service(
         capture_output=True,
         cwd=REPOSITORY_ROOT,
         env=env,
-        timeout=SERVICE_TIMEOUT_SECONDS,
+        timeout=service_timeout(name),
         check=False,
     )
     try:
@@ -538,13 +560,14 @@ def switch_mode_command(session: dict[str, Any], mode: str, topic: str) -> str:
 def apply_command(line: str, session: dict[str, Any]) -> tuple[str, bool]:
     stripped = line.strip()
     language = session.get("language", "pt-BR")
-    if stripped in {"/quit", "/exit"}:
+    if stripped in {"/quit", "/exit", "/sair"}:
         return "", True
     if stripped == "/help":
         print(
-            "Comandos: /learn <tema>, /setter <tema>, /retomar (/resume), /mode, /model [perfil], /difficulty <escala>, "
+            "Comandos: /learn <tema>, /setter <tema>, /retomar (/resume), /mode, /difficulty <escala>, "
             "/statement <enunciado>, /constraints <limites>, /hypothesis <falha provável>, "
-            "/consolidar (/consolidate), /recomecar (/restart), /sync, /quit.\n\n" + messages.FLOW[language]
+            "/consolidar (/consolidate), /recomecar (/restart), /sync, /sair (/exit, /quit).\n\n"
+            + messages.FLOW[language]
         )
         return "", False
     if stripped == "/mode":
@@ -851,6 +874,38 @@ def run_command(line: str, session: dict[str, Any]) -> tuple[str, bool, str]:
     return remaining, should_exit, output
 
 
+def render_markdown(text: str, glow_executable: str | None) -> None:
+    if not text:
+        return
+    if glow_executable is None:
+        print(text, end="")
+        return
+
+    width = max(20, shutil.get_terminal_size(fallback=(100, 24)).columns)
+    try:
+        result = subprocess.run(
+            [glow_executable, "-w", str(width), "-"],
+            input=text,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        print(f"Aviso: não foi possível executar Glow: {exc}. Exibindo Markdown sem formatação.", file=sys.stderr)
+        print(text, end="")
+        return
+    if result.returncode:
+        detail = result.stderr.strip() or f"código de saída {result.returncode}"
+        print(f"Aviso: Glow falhou ({detail}). Exibindo Markdown sem formatação.", file=sys.stderr)
+        print(text, end="")
+
+
+def local_time() -> str:
+    return datetime.now().astimezone().strftime("%H:%M:%S")
+
+
 def new_session_id(prefix: str = "chat") -> str:
     return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
 
@@ -911,6 +966,16 @@ def main(argv: list[str] | None = None) -> None:
         resolve_profile()
     except ProfileError as exc:
         raise SystemExit(f"{exc}\nConfigure o modelo (veja `python -m cp_framework.models list`) e rode com --check.")
+    terminal_width = shutil.get_terminal_size(fallback=(100, 24)).columns
+    banner = startup_banner(terminal_width)
+    if banner:
+        print(banner)
+    glow_executable = shutil.which("glow")
+    if glow_executable is None:
+        print(
+            "Glow não encontrado. Instale com `winget install charmbracelet.glow`; "
+            "as respostas serão exibidas sem formatação Markdown até lá."
+        )
     os.environ.setdefault("CP_SESSION_ID", new_session_id())
     session = new_session()
     if args.contexto:
@@ -929,8 +994,7 @@ def main(argv: list[str] | None = None) -> None:
             "consolidated_context": bool(session.get("consolidated_context")),
         }
     )
-    print(f"CP framework pronto | perfil {trusted_mode} | {model_banner()} | /help para comandos | /quit para sair")
-    print("O modo ADMIN vem apenas da configuração confiável CP_FRAMEWORK_MODE.")
+    print(f"CP framework pronto | {model_banner()} | /help para comandos | /sair para sair")
     session_dir = transcript.session_dir()
     if session_dir:
         print(f"Sessão gravada em {session_dir}")
@@ -940,8 +1004,10 @@ def main(argv: list[str] | None = None) -> None:
         except (EOFError, KeyboardInterrupt):
             print("\nSessão encerrada.")
             break
+        if line.strip() and not line.lstrip().startswith("/"):
+            print(f"[{local_time()}] Mensagem enviada.")
         line, should_exit, output = run_command(line, session)
-        print(output, end="")
+        render_markdown(output, glow_executable)
         if should_exit:
             print("Sessão encerrada.")
             break
@@ -951,7 +1017,9 @@ def main(argv: list[str] | None = None) -> None:
             answer = process_turn(line, session)
         except Exception as exc:
             answer = f"Falha interna do manager: {exc}"
-        print(f"\nManager> {finish_turn(line, answer, session)}")
+        answer = finish_turn(line, answer, session)
+        print(f"\n[{local_time()}] Manager> ", end="", flush=True)
+        render_markdown(answer, glow_executable)
 
 
 if __name__ == "__main__":

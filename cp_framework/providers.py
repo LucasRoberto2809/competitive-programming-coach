@@ -152,7 +152,7 @@ class ChatCompletionsClient:
         if profile.max_tokens:
             options["num_predict"] = profile.max_tokens
         try:
-            with Client(host=profile.base_url, timeout=HTTP_TIMEOUT_SECONDS) as client:
+            with Client(host=profile.base_url, timeout=None) as client:
                 response = client.chat(
                     model=profile.model,
                     messages=[

@@ -1,6 +1,6 @@
-"""Copilot models through the official GitHub Copilot SDK (optional dependency).
+"""Copilot models through the official GitHub Copilot SDK.
 
-Install for a run with: uv run --no-project --with github-copilot-sdk python -m cp_framework.app
+Install with `make dependencies` or `uv sync`.
 Authentication: a fine-grained PAT (github_pat_...) in the profile's key variable, by default
 COPILOT_GITHUB_TOKEN. Sessions run in the SDK's isolated "empty" mode with a dedicated
 home directory, no tools, and our system prompt replacing the agent's, so only the task is
@@ -19,8 +19,8 @@ from typing import Any
 from .config import HTTP_TIMEOUT_SECONDS
 
 INSTALL_HINT = (
-    "O Copilot SDK não está instalado neste Python. Rode o app ou o benchmark com "
-    "`uv run --no-project --with github-copilot-sdk python -m ...`."
+    "O SDK github-copilot-sdk não está instalado neste ambiente. Rode `make dependencies` ou `uv sync` "
+    "e inicie o app com `uv run python -m cp_framework.app`."
 )
 
 
