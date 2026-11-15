@@ -71,7 +71,17 @@ Return one JSON object only, matching the manager-provided schema. Default shape
 }
 ```
 
-Use integer criterion scores on the supplied 0–4 scale and calculate `pass` from the configured threshold. Return all applicable criterion IDs for the selected role. Do not include rationales, prose, recommended changes, rewritten content, hidden chain-of-thought, or extra keys. If Jev is configured, request typed score judgments and map them to this schema; do not treat Jev's confidence as correctness proof. If Jev is unavailable, the runtime may use a schema-constrained evaluator with the same rubric, or mark the evaluation unavailable according to configuration.
+Use integer criterion scores on the supplied 0–4 scale and calculate `pass` from the configured threshold. Return all applicable criterion IDs for the selected role. Do not include rationales, prose, recommended changes, rewritten content, hidden chain-of-thought, or extra keys.
+
+## Backends
+
+The evaluator is model-agnostic. The runtime may run it on any configured model reachable through an OpenAI-compatible chat API (a named profile, currently restricted to free models), on Jev typed score judgments, or not at all:
+
+- With a chat model, the model returns only `{"criteria": {...}}` with integer scores; the runtime computes `total` and `pass` itself so a model cannot inflate the result.
+- With Jev, map its typed score judgments to the same schema; do not treat Jev's confidence as correctness proof.
+- If the output is malformed or the backend fails, the evaluation is recorded as unavailable, never as a pass.
+
+Scores from different evaluator models are not directly comparable; record which profile produced them.
 
 ## Isolation and safety
 

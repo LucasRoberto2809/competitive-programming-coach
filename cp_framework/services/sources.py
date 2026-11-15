@@ -62,6 +62,7 @@ def fetch_api(url: str, accept: str = "application/json") -> tuple[bytes, dict[s
             response_headers = {key.lower(): value for key, value in response.headers.items()}
     except HTTPError as exc:
         detail = exc.read(4000).decode("utf-8", errors="replace")
+        exc.close()
         raise RuntimeError(f"HTTP {exc.code} em {url}: {detail}") from exc
     except (URLError, TimeoutError) as exc:
         raise RuntimeError(f"Falha ao consultar {url}: {exc}") from exc

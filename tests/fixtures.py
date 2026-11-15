@@ -239,7 +239,7 @@ class Simulator:
             raise RuntimeError(response.get("error"))
         return response
 
-    def _complete(self, system_prompt: str, user_prompt: str) -> str:
+    def _complete(self, system_prompt: str, user_prompt: str, **_options: Any) -> str:
         context = json.loads(user_prompt.split("\n", 1)[1])
         if "## Contrato de saída" in system_prompt:
             self.solver_calls.append({"system": system_prompt, "task": context})

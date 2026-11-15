@@ -1,7 +1,11 @@
+.env
 data/sources/*.json
 data/sources/*.tmp
 data/sources/.codeforces_last_request
 data/sessions/
+data/runs/
+data/copilot-home/
+data/benchmarks/
 __pycache__/
 *.py[cod]
 .venv/

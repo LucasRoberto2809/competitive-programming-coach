@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -14,8 +16,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+if __name__ == "__main__":
+    # Only the interactive app reads .env, and before config is imported. Services
+    # receive just the variables run_service forwards to them.
+    from .envfile import load_env_file
+
+    load_env_file()
+
 from . import catalog as local_catalog
-from . import messages
+from . import messages, transcript
+from .models import ProfileError, active_profile_name, describe_profiles, forwarded_env, resolve_profile
 from .config import (
     CONTEXT_BUDGET_TOKENS,
     CONTEXT_WARN_RATIO,
@@ -23,6 +33,7 @@ from .config import (
     MAX_REVISIONS,
     MODE,
     REPOSITORY_ROOT,
+    SERVICE_TIMEOUT_SECONDS,
     SESSIONS_ROOT,
     validate_mode,
 )
@@ -60,6 +71,13 @@ def run_service(
         "CP_EVALUATOR_PASS_THRESHOLD",
         "CP_HTTP_TIMEOUT_SECONDS",
         "CP_REQUIRE_JEV",
+        "CP_SESSION_ID",
+        "CP_TRANSCRIPT_DIR",
+        "CP_TRANSCRIPTS",
+        "CP_USAGE_LOG",
+        "CP_PROMPT_VARIANT",
+        "CP_MODELS_FILE",
+        "CP_ALLOW_PAID",
     }
     for key in common_keys:
         if key in os.environ:
@@ -74,15 +92,15 @@ def run_service(
             if key in os.environ:
                 env[key] = os.environ[key]
     if name == "templates":
-        for key in {
-            "CP_LLM_MODEL",
-            "CP_LLM_BASE_URL",
-            "CP_LLM_CHAT_COMPLETIONS_URL",
-            "CP_LLM_API_KEY",
-            "CP_LLM_TEMPERATURE",
-        }:
+        env.update(forwarded_env(active_profile_name()))
+    if name == "guardrails":
+        for key in ("CP_EVALUATOR_BACKEND", "CP_EVALUATOR_PROFILE"):
             if key in os.environ:
                 env[key] = os.environ[key]
+        if os.environ.get("CP_EVALUATOR_PROFILE"):
+            evaluator_env = forwarded_env(os.environ["CP_EVALUATOR_PROFILE"])
+            evaluator_env.pop("CP_LLM_PROFILE", None)
+            env.update(evaluator_env)
     if name in {"templates", "guardrails"} and manager_token:
         env["CP_ORCHESTRATOR_TOKEN"] = manager_token
         child_payload["manager_token"] = manager_token
@@ -94,7 +112,7 @@ def run_service(
         capture_output=True,
         cwd=REPOSITORY_ROOT,
         env=env,
-        timeout=180,
+        timeout=SERVICE_TIMEOUT_SECONDS,
         check=False,
     )
     try:
@@ -524,13 +542,16 @@ def apply_command(line: str, session: dict[str, Any]) -> tuple[str, bool]:
         return "", True
     if stripped == "/help":
         print(
-            "Comandos: /learn <tema>, /setter <tema>, /retomar (/resume), /mode, /difficulty <escala>, "
+            "Comandos: /learn <tema>, /setter <tema>, /retomar (/resume), /mode, /model [perfil], /difficulty <escala>, "
             "/statement <enunciado>, /constraints <limites>, /hypothesis <falha provável>, "
             "/consolidar (/consolidate), /recomecar (/restart), /sync, /quit.\n\n" + messages.FLOW[language]
         )
         return "", False
     if stripped == "/mode":
         print(f"Modo atual: {session['mode']} | ambiente confiável: {MODE}")
+        return "", False
+    if stripped == "/model" or stripped.startswith("/model "):
+        print(select_model(stripped[len("/model") :].strip()))
         return "", False
     if stripped.startswith("/learn"):
         print(switch_mode_command(session, "LEARNING", stripped[len("/learn") :].strip()))
@@ -594,7 +615,19 @@ def compose(prefixes: list[str], body: str, suffix: str = "") -> str:
     return "\n\n".join([item for item in prefixes if item] + [body]) + suffix
 
 
+def _preflight_summary(preflight: dict[str, Any]) -> dict[str, Any]:
+    keys = ("status", "reason", "template_id", "mode", "language", "intents", "missing", "problem_refs", "scope", "progress_stage")
+    summary = {key: preflight.get(key) for key in keys if preflight.get(key) is not None}
+    if preflight.get("mode_transition"):
+        summary["mode_transition"] = {k: preflight["mode_transition"].get(k) for k in ("from", "to", "trigger")}
+    if (preflight.get("similar_problems") or {}).get("matches"):
+        summary["similar_problems"] = [m.get("problem_id") for m in preflight["similar_problems"]["matches"]]
+    return summary
+
+
 def process_turn(prompt: str, session: dict[str, Any]) -> str:
+    turn: dict[str, Any] = {"outcome": None, "attempts": []}
+    session["_turn"] = turn
     if re.search(r"(?:problem\s*statement|statement|enunciado)\s*:", prompt, re.I):
         session["solution_code"] = ""
         session["stress_hypothesis"] = ""
@@ -616,6 +649,7 @@ def process_turn(prompt: str, session: dict[str, Any]) -> str:
     )
     language = preflight.get("language") or session.get("language", "pt-BR")
     session["language"] = language
+    turn["preflight"] = _preflight_summary(preflight)
     prefixes: list[str] = []
     transition = preflight.get("mode_transition")
     if transition:
@@ -629,6 +663,7 @@ def process_turn(prompt: str, session: dict[str, Any]) -> str:
             session["solution_code"] = fenced_code
     similar = preflight.get("similar_problems")
     if preflight.get("status") != "ready":
+        turn["outcome"] = str(preflight.get("status"))
         body = str(preflight.get("message") or messages.text("guardrail_fallback", language))
         return compose(prefixes, body, similar_notice(similar, language))
 
@@ -651,6 +686,7 @@ def process_turn(prompt: str, session: dict[str, Any]) -> str:
     try:
         problems, articles, problem_plan, topic_changed = prepare_sources(prompt, preflight, session)
     except Exception as exc:
+        turn.update(outcome="sources_error", error=str(exc)[:500])
         return f"Não consegui atualizar as fontes locais: {exc}. Você pode tentar novamente com /sync."
     template_id = preflight["template_id"]
     if topic_changed:
@@ -668,6 +704,15 @@ def process_turn(prompt: str, session: dict[str, Any]) -> str:
 
     solver_key, solver_task = solver_key_and_task(template_id, preflight["mode"], facts, session)
     reference = (session.get("references") or {}).get(solver_key) if solver_key else None
+    turn.update(
+        template_id=template_id,
+        problem_ids=[item.get("id") for item in problems],
+        problem_urls=[item.get("url") for item in problems if item.get("url")],
+        article_paths=[item.get("path") for item in articles],
+        problem_plan={k: problem_plan.get(k) for k in ("status", "tags", "capped", "veteran_blocked", "exhausted", "reused")},
+        focus_problem=(session.get("focus_problem") or {}).get("id"),
+        solver_cached=bool(reference),
+    )
     topic = topic_label(session) if session.get("topic_tags") or session.get("topic") else prompt.strip()
     previous_problems = (transition or {}).get("previous_state", {}).get("problems_shown", [])
     focus = session.get("focus_problem")
@@ -707,6 +752,7 @@ def process_turn(prompt: str, session: dict[str, Any]) -> str:
         try:
             candidate_result = run_service("templates", template_request, manager_token=session.get("manager_token"))
         except Exception as exc:
+            turn.update(outcome="templates_error", error=str(exc)[:500])
             return f"O serviço Templates não conseguiu gerar a resposta: {exc}"
         if candidate_result.get("solver_ran") and solver_key:
             reference = candidate_result.get("reference_solution")
@@ -733,9 +779,24 @@ def process_turn(prompt: str, session: dict[str, Any]) -> str:
                 manager_token=session.get("manager_token"),
             )
         except Exception as exc:
+            turn.update(outcome="guardrails_error", error=str(exc)[:500])
             return f"O serviço Guardrails não conseguiu avaliar a resposta: {exc}"
         last_result = guardrail_result
+        turn["attempts"].append(
+            {
+                "candidate": candidate,
+                "situations": candidate_result.get("situations"),
+                "generation_profile": candidate_result.get("generation_profile"),
+                "generation_model": candidate_result.get("generation_model"),
+                "solver_ran": candidate_result.get("solver_ran"),
+                "solver_status": (reference or {}).get("status"),
+                "approved": bool(guardrail_result.get("approved")),
+                "failed_checks": [c.get("id") for c in guardrail_result.get("deterministic_checks", []) if not c.get("passed")],
+                "evaluation": guardrail_result.get("evaluation"),
+            }
+        )
         if guardrail_result.get("approved"):
+            turn["outcome"] = "approved"
             if template_id == "setter_stress_intro":
                 session["stress_intro_shown"] = True
             if template_id == "setter_statement_review":
@@ -748,13 +809,14 @@ def process_turn(prompt: str, session: dict[str, Any]) -> str:
         retry_constraints = guardrail_result.get("retry_constraints", [])
         if attempt >= MAX_REVISIONS:
             break
+    turn["outcome"] = "guardrail_fallback"
     if MODE == "ADMIN" and last_result:
         return "Candidato retido pelos Guardrails.\n" + json.dumps(last_result, ensure_ascii=False, indent=2)
     return compose(prefixes, messages.text("guardrail_fallback", language))
 
 
 def finish_turn(line: str, answer: str, session: dict[str, Any]) -> str:
-    """Record the turn and warn once when the context window is running low."""
+    """Record the turn (history + transcript) and warn once when the context window is running low."""
     session["history"].append({"role": "user", "content": line})
     session["history"].append({"role": "assistant", "content": answer})
     session["history"] = session["history"][-16:]
@@ -762,27 +824,124 @@ def finish_turn(line: str, answer: str, session: dict[str, Any]) -> str:
         session["context_warned"] = True
         answer += "\n\n---\n" + consolidation_message(session, warning=True)
         session["history"][-1]["content"] = answer
+    transcript.write_turn(
+        {
+            "kind": "turn",
+            "profile": os.environ.get("CP_LLM_PROFILE") or active_profile_name(),
+            "prompt_variant": os.environ.get("CP_PROMPT_VARIANT", "full"),
+            "mode": session.get("mode"),
+            "topic_tags": session.get("topic_tags"),
+            "stage": stage_of(session),
+            "user": line,
+            "answer": answer,
+            "pipeline": session.pop("_turn", None),
+        }
+    )
     return answer
+
+
+def run_command(line: str, session: dict[str, Any]) -> tuple[str, bool, str]:
+    """apply_command with its printed output captured and recorded in the transcript."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        remaining, should_exit = apply_command(line, session)
+    output = buffer.getvalue()
+    if line.strip().startswith("/") and not remaining.strip():
+        transcript.write_turn({"kind": "command", "user": line.strip(), "output": output.strip(), "mode": session.get("mode")})
+    return remaining, should_exit, output
+
+
+def new_session_id(prefix: str = "chat") -> str:
+    return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
+
+
+def model_banner() -> str:
+    try:
+        profile = resolve_profile()
+    except ProfileError as exc:
+        return f"modelo não configurado ({exc})"
+    return f"modelo {profile.name} ({profile.model})"
+
+
+def select_model(name: str) -> str:
+    """/model lists profiles; /model <name> switches the chat model for the next turns."""
+    if not name:
+        return describe_profiles() + "\n\nAtual: " + model_banner() + "\nUse /model <perfil> para trocar."
+    try:
+        profile = resolve_profile(name)
+    except ProfileError as exc:
+        return str(exc)
+    if profile.api_key_env and not profile.api_key():
+        return f"O perfil '{name}' precisa da chave {profile.api_key_env} no .env."
+    os.environ["CP_LLM_PROFILE"] = name
+    return f"Modelo trocado para {profile.name} ({profile.model})."
 
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Sessão interativa do CP framework.")
+    parser.add_argument("--model", help="perfil de modelo definido em models.json")
+    parser.add_argument(
+        "--allow-paid",
+        action="store_true",
+        help="permite chamadas a modelos pagos nesta execução",
+    )
+    parser.add_argument("--check", "--verificar", action="store_true", help="verifica a configuração")
+    parser.add_argument("--all", action="store_true", help="verifica todos os perfis (com --check)")
+    parser.add_argument("--contexto", type=Path, help="arquivo com contexto consolidado")
+    args = parser.parse_args(argv)
+    if args.model:
+        os.environ["CP_LLM_PROFILE"] = args.model
+    if args.allow_paid:
+        os.environ["CP_ALLOW_PAID"] = "1"
+    if args.check:
+        from .check import format_results, run_all_checks, run_checks
+
+        if args.all:
+            report, failed = run_all_checks()
+            print(report)
+            raise SystemExit(1 if failed else 0)
+        results = run_checks()
+        print(format_results(results))
+        raise SystemExit(1 if any(item["status"] == "fail" for item in results) else 0)
     trusted_mode = validate_mode(MODE)
+    try:
+        resolve_profile()
+    except ProfileError as exc:
+        raise SystemExit(f"{exc}\nConfigure o modelo (veja `python -m cp_framework.models list`) e rode com --check.")
+    os.environ.setdefault("CP_SESSION_ID", new_session_id())
     session = new_session()
-    if "--contexto" in argv:
-        position = argv.index("--contexto")
-        if position + 1 < len(argv):
-            session["consolidated_context"] = Path(argv[position + 1]).read_text(encoding="utf-8")
-            print("Contexto consolidado carregado.")
-    print(f"CP framework pronto | perfil {trusted_mode} | /help para comandos | /quit para sair")
+    if args.contexto:
+        session["consolidated_context"] = args.contexto.read_text(encoding="utf-8")
+        print("Contexto consolidado carregado.")
+    profile = resolve_profile()
+    transcript.write_meta(
+        {
+            "kind": "chat",
+            "session_id": os.environ["CP_SESSION_ID"],
+            "profile": profile.name,
+            "model": profile.model,
+            "provider": profile.provider,
+            "prompt_variant": os.environ.get("CP_PROMPT_VARIANT", "full"),
+            "trusted_mode": trusted_mode,
+            "consolidated_context": bool(session.get("consolidated_context")),
+        }
+    )
+    print(f"CP framework pronto | perfil {trusted_mode} | {model_banner()} | /help para comandos | /quit para sair")
     print("O modo ADMIN vem apenas da configuração confiável CP_FRAMEWORK_MODE.")
+    session_dir = transcript.session_dir()
+    if session_dir:
+        print(f"Sessão gravada em {session_dir}")
     while True:
         try:
             line = input("\nVocê> ")
         except (EOFError, KeyboardInterrupt):
             print("\nSessão encerrada.")
             break
-        line, should_exit = apply_command(line, session)
+        line, should_exit, output = run_command(line, session)
+        print(output, end="")
         if should_exit:
             print("Sessão encerrada.")
             break

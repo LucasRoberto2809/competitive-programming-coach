@@ -220,6 +220,29 @@ class IntentDetectionTest(unittest.TestCase):
         )
         self.assertFalse(intents["bypass_attempt"] or intents["solution_request"])
 
+    def test_contains_code_allows_quoted_data(self) -> None:
+        allowed = [
+            "Exemplo:\n```\n3 1\n1 2 3\n1 3\n```\nSaída: `6`",
+            "```\nEntrada:\n3 1\n1 2 3\nSaída:\n6\n```",
+            "Use `dp[i]` para o estado.",
+            "| n | saída |\n|---|---|\n| 3 | 6 |",
+        ]
+        blocked = [
+            "```cpp\nint x;\n```",
+            "```\nfor i in range(n): s += a[i]\n```",
+            "```\ndp[i] = max(dp[i-1], a[i])\n```",
+            "```python\nprint(1)\n```",
+            "Use isto: def solve(n): return n",
+            "```\naberto sem fechar",
+            "```\n#include <bits/stdc++.h>\n```",
+        ]
+        for text in allowed:
+            with self.subTest(allowed=text):
+                self.assertFalse(guardrails.contains_code(text))
+        for text in blocked:
+            with self.subTest(blocked=text):
+                self.assertTrue(guardrails.contains_code(text))
+
     def test_creating_own_problem_vs_asking_us_to_create_one(self) -> None:
         setter = [
             "agora quero criar meu próprio problema", "criei um problema e quero testar",
@@ -485,6 +508,15 @@ class LearningSolverTest(SimulationCase):
                 answer = sim.say("me dá a solução do 1950D")
                 self.assertIn("solver_unavailable", sim.last_context["active_situations"])
                 self.assertNotIn("```", answer)
+                self.assertEqual(answer, "O Solver não chegou a uma solução confiável; vamos seguir com dicas.")
+                self.assert_approved(sim)
+        replies = iter(["```cpp\nint main(){}\n```", "Sem solução confiável; seguimos com dicas."])
+        sim = self.make_sim(lambda ctx, _s: next(replies) if ctx["template_id"] == "learning_solution" else "Dica.",
+                            solver=lambda task: solved_reference(task, status="unknown_problem", solution_code=""))
+        sim.say("/learn dp")
+        sim.say(PSEUDOCODE)
+        self.assertEqual(sim.say("me dá a solução do 1950D"), "Sem solução confiável; seguimos com dicas.")
+        self.assertIn("no_unbacked_code", self.failed_checks(sim, -2))
         sim = self.make_sim(solution_answer, solver=lambda task: "isso não é json")
         sim.say("/learn dp")
         sim.say("quero dicas do 1950D")

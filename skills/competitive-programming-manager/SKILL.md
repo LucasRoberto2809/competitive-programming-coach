@@ -81,7 +81,7 @@ Use the rubric and threshold supplied by trusted configuration. If none is suppl
 
 Require Evaluator to return `total`, per-criterion integer scores from 0–4, and `pass` only. The manager must not ask Evaluator to generate prose feedback. On a failed score, the manager sends the original content role only the criterion IDs and scores plus the minimum retry constraints; no evaluator rationale exists or is forwarded.
 
-Jev may be used as a structured scoring backend if the host has a configured TypeSafe integration. It is optional: this repository environment has no connected Jev tool or credentials. A fallback evaluator must follow the same score-only schema and should be calibrated against labeled competitive-programming cases before automated gating.
+The evaluator backend is model-agnostic: any configured chat model reachable through an OpenAI-compatible API (selected by profile; free models only unless paid use is explicitly enabled), Jev typed scoring if a TypeSafe integration is configured, or none. Every backend must follow the same score-only schema, and a fallback evaluator should be calibrated against labeled competitive-programming cases before automated gating. Content roles (Coach, Solver) likewise run on whichever profile the host selects; no role may assume a specific provider or model.
 
 ## Manager output
 

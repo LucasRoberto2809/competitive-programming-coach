@@ -10,6 +10,12 @@ Project-owned skills for a competitive-programming learning workflow. The manage
 | `competitive-programming-evaluator` | Score a candidate against the manager's supplied template | Structured scores only; no advice or rewrite |
 | `competitive-programming-originality` | Point out published Codeforces problems similar or identical to a Problem Setter statement | Short neutral notice; never an accusation |
 
+## Use in VS Code Chat
+
+In a Copilot Chat session with Agent Skills enabled, type `/competitive` and add your request after it. For example: `/competitive Quero aprender busca binária com dicas graduais.` This workspace skill is the user-invocable entry point and follows the role instructions in `skills/`.
+
+The slash command loads the workflow instructions; it does not itself provide private role sessions or guarantee inter-skill calls. Use `python -m cp_framework.app` when you need the Python framework's runtime orchestration.
+
 ## Modes and routing
 
 - `USER` is the default. The manager gathers the learner's themes, difficulty range, and other necessary preferences, then routes one task to Coach or Solver. Every content response is scored internally; low scores trigger a bounded retry.
@@ -18,7 +24,7 @@ Project-owned skills for a competitive-programming learning workflow. The manage
 
 These Markdown skills define behavior; they do not by themselves provide authenticated modes, private child skills, inter-skill calls, Jev credentials, a problem retriever, or an online judge. A deployment that needs hard isolation must expose only the manager and enforce role routing and admin identity in its host/runtime.
 
-Jev is documented as accepting typed judgments and ratings, so the Evaluator defines it as an optional backend. It is not connected in this repository environment. The evaluator contract also allows a schema-constrained model or manual review; scores must not be described as proof of correctness.
+The Evaluator is model-agnostic: it can run on any configured free model profile, on Jev (which accepts typed judgments and ratings) when a TypeSafe key is configured, or be disabled. Scores must not be described as proof of correctness.
 
 ## Existing experiments
 
@@ -49,19 +55,70 @@ The manager selects practice problems locally from the catalog (`cp_framework/ca
 
 ### Run a session
 
-Use Python 3.10 or later. The framework uses only the standard library; configure a chat-completions compatible provider and Jev with environment variables. The provider and model are deliberately not hard-coded.
+Use Python 3.10 or later. The default profile is the local Ollama model `llama3.2:1b`, accessed through the official [`ollama-python`](https://github.com/ollama/ollama-python) SDK. Ollama must be installed and running; no API key is needed. Other models can be selected from `models.json`.
 
-PowerShell example:
+1. Install Ollama, then download the model:
+
+   ```powershell
+   ollama pull llama3.2:1b
+   ```
+
+2. Install the project and check the connection (the check sends one chat and one JSON request to Ollama):
+
+   ```powershell
+   uv sync
+   uv run python -m cp_framework.app --check
+   ```
+
+3. Start the terminal chat:
+
+   ```powershell
+   uv run python -m cp_framework.app
+   ```
+
+   Inside the chat, `/model` lists profiles and `/model <profile>` switches the model for the next turns. Other profiles include free OpenRouter models and GitHub Copilot.
+
+Manage profiles with `uv run python -m cp_framework.models`: `list`, `search [text] [--json] [--include-paid]` (OpenRouter catalog, free models by default), and `add <name> --model <id> [--provider groq|gemini|ollama|custom ...] [--free-tier] [--default]`. For OpenRouter, `add` checks that the model exists and fills its price and JSON support from the public model list. Other providers (Groq, Gemini, Mistral, DeepSeek, Ollama, any custom base URL) use presets for the endpoint and key variable.
+
+Every model call is appended to `data/runs/usage.jsonl` (profile, model, purpose such as `template:learning_start`, `solver`, or `evaluator`, latency, tokens, list and billed cost, session). Every chat session is also saved in full for later manual analysis under `data/sessions/<session-id>/`: `meta.json`, `turns.jsonl` (each command and turn with the final answer, preflight, template, rejected candidates, failed guardrail checks, Solver status), `calls.jsonl` (each model call with user prompt, response, and usage), and `prompts/` (system prompts stored once by hash). Set `CP_USAGE_LOG=0` or `CP_TRANSCRIPTS=0` to disable them.
+
+`CP_PROMPT_VARIANT=compact` drops the long Manager/Coach/Solver/Evaluator skill texts from the prompts (keeping the rules, situations, and template guides), shortens article excerpts, and keeps less history.
+
+### GitHub Copilot models
+
+Copilot models are used through the official GitHub Copilot SDK, as profiles with `"provider": "copilot"`. They consume the plan's AI credits (1 credit = US$ 0.01, priced per token), so they require `CP_ALLOW_PAID=1`. Sessions run in the SDK's isolated `empty` mode with their own home (`data/copilot-home/`), no tools, and our system prompt replacing the agent's, so nothing touches `~/.copilot` and only the task is measured.
 
 ```powershell
-$env:CP_LLM_MODEL = "your-model-id"
-$env:CP_LLM_BASE_URL = "https://your-provider.example/v1"
-$env:CP_LLM_API_KEY = "your-chat-provider-key"
-$env:TYPESAFE_API_KEY = "your-jev-key"
-python -m cp_framework.app
+winget install GitHub.cli; gh auth login --web       # once: your GitHub user with Copilot (gho_ token in the keyring)
+uv run --no-project --with github-copilot-sdk python -m cp_framework.models copilot                       # models + prices on your account
+uv run --no-project --with github-copilot-sdk python -m cp_framework.models add copilot-gpt-6-luna --provider copilot --model gpt-6-luna
 ```
 
-`CP_LLM_BASE_URL` defaults to the OpenAI API base URL; `CP_LLM_CHAT_COMPLETIONS_URL` can override the full endpoint. For an OpenAI-compatible local service, the API key may be omitted if that service does not require one. `TYPESAFE_API_KEY` is optional in development: without it, source ranking uses a local keyword fallback and candidates are marked unscored. That fallback does not claim an Evaluator pass. Set `CP_REQUIRE_JEV=1` to require JEV; without a key, source ranking and candidate approval fail closed.
+The token is resolved from `COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token`; classic `ghp_` tokens are rejected. `models add` reads the model's per-token prices from the API. The billed cost comes from the usage the SDK reports (`nano_aiu × 10⁻¹¹` USD, cache discounts included).
+
+To start an interactive terminal session using Luna 6, explicitly allow paid usage for this run:
+
+```powershell
+uv run --no-project --with github-copilot-sdk python -m cp_framework.app --model copilot-gpt-6-luna --allow-paid
+```
+
+The app prompts with `Você>`; type `/help` to see the learning commands and `/quit` to end the session. To check Copilot authentication, SDK availability, and model connectivity before chatting, add `--check` to the same command (keeping both `--model copilot-gpt-6-luna` and `--allow-paid`).
+
+### Benchmark
+
+`python -m cp_framework.benchmark` runs 18 use-case scenarios (from [docs/template-use-cases.md](docs/template-use-cases.md)) through the real pipeline for each model profile and prompt variant, with objective checks on the final answer, a spending cap, resume by run id, and full transcripts:
+
+```powershell
+uv run --no-project python -m cp_framework.benchmark scenarios
+uv run --no-project python -m cp_framework.benchmark estimate --profiles copilot-gpt-6-luna,copilot-claude-sonnet-5.5 --variants full,compact
+uv run --no-project --with github-copilot-sdk python -m cp_framework.benchmark run --profiles copilot-gpt-6-luna --variants full,compact --allow-paid --budget-usd 2
+uv run --no-project python -m cp_framework.benchmark rescore <run-id>                 # re-evaluate checks from transcripts, no model calls
+uv run --no-project python -m cp_framework.benchmark report <name> --merge run-a,run-b  # one report for runs executed in parallel
+```
+
+Each run writes `data/benchmarks/<run-id>/` with `results.jsonl`, `usage.jsonl`, `sessions/`, `summary.md`, and `report.html`, which has dependency-free SVG charts: cost × quality with the Pareto frontier, score heatmap per scenario, cost per scenario and per fully correct scenario, tokens, model time, and one cost/result chart per use case. `--judge <profile>` adds LLM rubric scores.
+
+The evaluator can run on any free profile (`CP_EVALUATOR_PROFILE`) and returns only per-criterion scores in JSON; the total and pass are computed in code. `CP_EVALUATOR_BACKEND` selects `auto` (Jev if `TYPESAFE_API_KEY` is set, otherwise the evaluator profile, otherwise no score), `llm`, `jev`, or `none`. Without an evaluator, candidates still pass the deterministic guardrails but are marked unscored; `CP_REQUIRE_JEV=1` makes approval fail closed. The legacy `CP_LLM_MODEL`/`CP_LLM_BASE_URL`/`CP_LLM_API_KEY` variables still work as a profile named `env`.
 
 `CP_FRAMEWORK_MODE` is read from the host environment and defaults to `USER`; set it to `ADMIN` only in the trusted local runtime. A chat command cannot change it. This environment variable is suitable for local framework tests, not an authentication boundary for a deployed service.
 
@@ -83,8 +140,8 @@ Template examples ("Templates testados para utilizar no chat") and the decisions
 ### Tests
 
 ```powershell
-python -m unittest discover -s tests -t .                       # offline: catalog, guardrails, templates, use-case simulations
-$env:CP_LIVE_TESTS='1'; python -m unittest tests.test_sources_live  # hits Codeforces and GitHub
+uv run python -m unittest discover -s tests -t .                       # offline: catalog, guardrails, templates, models, end-to-end chat against fake providers
+$env:CP_LIVE_TESTS='1'; uv run python -m unittest tests.test_sources_live  # hits Codeforces and GitHub
 ```
 
 ### Run a service directly
@@ -99,7 +156,7 @@ Templates accepts `action: "render"`, a `template_id`, request/profile fields, a
 
 ### Runtime boundaries
 
-- JEV makes typed relevance judgments over source records in Templates. A separate chat model writes the prose response. Guardrails asks JEV for rubric scores; JEV does not write a response or make the application's final policy decision.
+- The chat model (any profile) writes the prose response and the Solver's structured reference. If Jev is configured, it makes typed relevance judgments over non-catalog sources and can score candidates; otherwise scoring uses the evaluator profile or is skipped. Neither the evaluator nor Jev writes the response or makes the application's final policy decision.
 - Guardrails checks are deterministic where possible. JEV scores are measurements, not proof of factual correctness. If JEV is unavailable, a deterministic-policy-approved candidate is marked `not_scored`; no score or evaluator pass is claimed.
 - This first implementation supports learning and user-authored Problem Setter workflows. The Solver is a model-generated reference (structured JSON), not a source-reproduction pipeline: it does not retrieve competitor submissions, verify online judge verdicts, or run code, so its solutions and example checks are labeled as unverified.
 - The session is in memory and ends with the application process. Service CLIs are stateless between calls. Administrator identity, rate limits, model budgets, retries, and network permissions need trusted host configuration before deployment.

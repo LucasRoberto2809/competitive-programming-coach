@@ -1,0 +1,101 @@
+{
+  "default": "ollama-llama3.2-1b",
+  "profiles": {
+    "ollama-llama3.2-1b": {
+      "provider": "ollama",
+      "model": "llama3.2:1b",
+      "json_mode": true,
+      "notes": "Ollama local via SDK oficial ollama-python"
+    },
+    "gemma-31b-free": {
+      "provider": "openrouter",
+      "model": "google/gemma-4-31b-it:free",
+      "price_input_per_mtok": 0.0,
+      "price_output_per_mtok": 0.0,
+      "json_mode": true,
+      "notes": "contexto 262144 tokens; preços do OpenRouter"
+    },
+    "gemma-26b-free": {
+      "provider": "openrouter",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "price_input_per_mtok": 0.0,
+      "price_output_per_mtok": 0.0,
+      "json_mode": true,
+      "notes": "contexto 262144 tokens; preços do OpenRouter"
+    },
+    "nemotron-super-free": {
+      "provider": "openrouter",
+      "model": "nvidia/nemotron-3.5-super-vl:free",
+      "price_input_per_mtok": 0.0,
+      "price_output_per_mtok": 0.0,
+      "json_mode": true,
+      "notes": "contexto 1000000 tokens; preços do OpenRouter"
+    },
+    "nemotron-ultra-free": {
+      "provider": "openrouter",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "price_input_per_mtok": 0.0,
+      "price_output_per_mtok": 0.0,
+      "json_mode": false,
+      "notes": "contexto 1000000 tokens; preços do OpenRouter"
+    },
+    "north-code-free": {
+      "provider": "openrouter",
+      "model": "cohere/north-mini-code:free",
+      "price_input_per_mtok": 0.0,
+      "price_output_per_mtok": 0.0,
+      "json_mode": false,
+      "notes": "contexto 256000 tokens; preços do OpenRouter"
+    },
+    "copilot-gpt-6-luna": {
+      "provider": "copilot",
+      "model": "gpt-6-luna",
+      "price_input_per_mtok": 0.1,
+      "price_output_per_mtok": 0.5,
+      "notes": "preços da API do Copilot; contexto padrão 272000 tokens"
+    },
+    "copilot-gpt-6-luna-low": {
+      "provider": "copilot",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "low",
+      "price_input_per_mtok": 0.1,
+      "price_output_per_mtok": 0.5,
+      "notes": "preços da API do Copilot; contexto padrão 272000 tokens"
+    },
+    "copilot-gpt-6.1-sol": {
+      "provider": "copilot",
+      "model": "gpt-6.1-sol",
+      "price_input_per_mtok": 2.0,
+      "price_output_per_mtok": 10.0,
+      "notes": "preços da API do Copilot; contexto padrão 272000 tokens"
+    },
+    "copilot-claude-sonnet-5.5": {
+      "provider": "copilot",
+      "model": "claude-sonnet-5.5",
+      "price_input_per_mtok": 2.0,
+      "price_output_per_mtok": 10.0,
+      "notes": "preços da API do Copilot; contexto padrão 200000 tokens"
+    },
+    "copilot-gpt-5.3-codex": {
+      "provider": "copilot",
+      "model": "gpt-5.3-codex",
+      "price_input_per_mtok": 1.75,
+      "price_output_per_mtok": 14.0,
+      "notes": "preços da API do Copilot; contexto padrão 272000 tokens"
+    },
+    "copilot-claude-opus-5.5": {
+      "provider": "copilot",
+      "model": "claude-opus-5.5",
+      "price_input_per_mtok": 4.0,
+      "price_output_per_mtok": 20.0,
+      "notes": "preços da API do Copilot; contexto padrão 200000 tokens"
+    },
+    "copilot-gpt-6-astra": {
+      "provider": "copilot",
+      "model": "gpt-6-astra",
+      "price_input_per_mtok": 10.0,
+      "price_output_per_mtok": 50.0,
+      "notes": "preços da API do Copilot; contexto padrão 272000 tokens"
+    }
+  }
+}

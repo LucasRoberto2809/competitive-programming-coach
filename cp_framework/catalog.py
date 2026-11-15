@@ -226,8 +226,9 @@ def _rating_range(text: str) -> tuple[int, int] | None:
     single = SINGLE_RATING_RE.search(text)
     if single and MIN_RATING <= int(single.group(1)) <= MAX_RATING:
         return int(single.group(1)), int(single.group(1))
-    if VETERAN_RATING_RE.search(text):
-        return int(VETERAN_RATING_RE.search(text).group(0).rstrip("+ ").strip()), MAX_RATING
+    veteran_rating = VETERAN_RATING_RE.search(text)
+    if veteran_rating:
+        return int(veteran_rating.group(0).rstrip("+ ").strip()), MAX_RATING
     return None
 
 
