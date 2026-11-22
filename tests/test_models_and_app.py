@@ -6,6 +6,7 @@ but exercise the real HTTP path and the real multi-process application.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from cp_framework import app, check, envfile, models
+from cp_framework import app, check, envfile, local_file_tools, models
 from cp_framework.providers import ChatCompletionsClient, ProviderError
 from cp_framework.services import guardrails
 from tests.fixtures import solved_reference, write_fixture_data
@@ -35,6 +36,7 @@ class FakeProvider:
         self.requests: list[dict[str, Any]] = []
         self.fail_with: int | None = None
         self.fail_times: int | None = None
+        self.tool_calls: list[dict[str, Any]] | None = None
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -52,8 +54,15 @@ class FakeProvider:
                 if self.headers.get("Authorization") != f"Bearer {FAKE_KEY}":
                     self._send(401, {"error": {"message": "chave inválida"}})
                     return
+                calls = provider.tool_calls
+                provider.tool_calls = None
+                message = (
+                    {"role": "assistant", "content": None, "tool_calls": calls}
+                    if calls is not None
+                    else {"role": "assistant", "content": provider.reply(body)}
+                )
                 self._send(200, {
-                    "choices": [{"message": {"role": "assistant", "content": provider.reply(body)}}],
+                    "choices": [{"message": message}],
                     "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
                 })
 
@@ -154,6 +163,43 @@ class EnvFileTest(unittest.TestCase):
             self.assertNotIn("EMPTY_ONE", os.environ)
             os.environ.pop("NEW_ONE")
         self.assertEqual(envfile.load_env_file(Path(tmp) / "missing.env"), [])
+
+
+class LocalFileToolTest(unittest.TestCase):
+    def test_reads_utf8_text_relative_to_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            (root / "main.py").write_bytes(b"print('oi')\n")
+
+            path, content = local_file_tools.read_local_file("main.py", root)
+
+        self.assertEqual(path, "main.py")
+        self.assertEqual(content, "print('oi')\n")
+
+    def test_rejects_paths_outside_repository_and_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "repo"
+            root.mkdir()
+            (base / "outside.py").write_text("not allowed", encoding="utf-8")
+            (root / ".env").write_text("TOKEN=secret", encoding="utf-8")
+
+            with self.assertRaisesRegex(local_file_tools.LocalFileReadError, "relativos"):
+                local_file_tools.read_local_file("../outside.py", root)
+            with self.assertRaisesRegex(local_file_tools.LocalFileReadError, "credenciais"):
+                local_file_tools.read_local_file(".env", root)
+
+    def test_rejects_binary_and_oversized_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "binary.dat").write_bytes(b"a\0b")
+            (root / "large.txt").write_bytes(b"x" * (local_file_tools.MAX_LOCAL_FILE_BYTES + 1))
+
+            with self.assertRaisesRegex(local_file_tools.LocalFileReadError, "binários"):
+                local_file_tools.read_local_file("binary.dat", root)
+            with self.assertRaisesRegex(local_file_tools.LocalFileReadError, "excede o limite"):
+                local_file_tools.read_local_file("large.txt", root)
 
 
 class ProfileTest(ProviderCase):
@@ -328,6 +374,72 @@ class ClientTest(ProviderCase):
             {"profile": "local", "model": "llama3.2:1b", "prompt_tokens": 100, "completion_tokens": 20, "cost_usd": 0.0},
         )
 
+    def test_ollama_sdk_executes_tool_calls_and_returns_to_model(self) -> None:
+        from types import SimpleNamespace
+
+        captured: dict[str, Any] = {"calls": []}
+
+        class FakeOllamaClient:
+            def __init__(self, **kwargs: Any) -> None:
+                captured["client"] = kwargs
+
+            def __enter__(self) -> FakeOllamaClient:
+                return self
+
+            def __exit__(self, *_args: Any) -> None:
+                pass
+
+            def chat(self, **kwargs: Any) -> Any:
+                captured["calls"].append(kwargs)
+                if len(captured["calls"]) == 1:
+                    message = SimpleNamespace(
+                        content=None,
+                        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+                            name="read_local_file", arguments={"path": "main.py"}
+                        ))],
+                        model_dump=lambda **_kwargs: {
+                            "role": "assistant",
+                            "tool_calls": [{"function": {"name": "read_local_file", "arguments": {"path": "main.py"}}}],
+                        },
+                    )
+                else:
+                    message = SimpleNamespace(content=MODEL_REPLY, tool_calls=[])
+                return SimpleNamespace(message=message, prompt_eval_count=100, eval_count=20)
+
+        fake_ollama = type("OllamaModule", (), {"Client": FakeOllamaClient, "ResponseError": RuntimeError})()
+        handler = mock.Mock(return_value='{"path":"main.py","content":"print(1)"}')
+        with mock.patch.dict(sys.modules, {"ollama": fake_ollama}):
+            reply = ChatCompletionsClient("local").complete(
+                "system",
+                "analyze main.py",
+                tools=[local_file_tools.READ_LOCAL_FILE_TOOL],
+                tool_handler=handler,
+            )
+
+        self.assertEqual(reply, MODEL_REPLY)
+        self.assertIsNone(captured["client"]["timeout"])
+        self.assertEqual(captured["calls"][0]["tools"], [local_file_tools.READ_LOCAL_FILE_TOOL])
+        self.assertEqual(captured["calls"][1]["messages"][-1], {
+            "role": "tool",
+            "tool_name": "read_local_file",
+            "content": '{"path":"main.py","content":"print(1)"}',
+        })
+        handler.assert_called_once_with("read_local_file", {"path": "main.py"})
+
+    def test_copilot_file_tool_registration(self) -> None:
+        from copilot import ToolInvocation
+
+        from cp_framework.copilot_backend import _copilot_tools
+
+        handler = mock.Mock(return_value="file content")
+        tool = _copilot_tools([local_file_tools.READ_LOCAL_FILE_TOOL], handler)[0]
+        result = asyncio.run(tool.handler(ToolInvocation(arguments={"path": "main.py"})))
+
+        self.assertEqual(tool.name, "read_local_file")
+        self.assertIn("path", tool.parameters["properties"])
+        self.assertEqual(result.text_result_for_llm, "file content")
+        handler.assert_called_once_with("read_local_file", {"path": "main.py"})
+
     def test_ollama_connection_error_is_actionable(self) -> None:
         captured: dict[str, Any] = {}
 
@@ -366,6 +478,33 @@ class ClientTest(ProviderCase):
              "completion_tokens": 20, "cost_usd": 0.0, "status": "ok", "session_id": "sess-1"},
         )
         self.assertNotIn(FAKE_KEY, self.usage_log.read_text(encoding="utf-8"))
+
+    def test_openai_tool_call_reads_file_then_resumes_model_response(self) -> None:
+        self.provider.tool_calls = [{
+            "id": "call-1",
+            "type": "function",
+            "function": {"name": "read_local_file", "arguments": '{"path":"main.py"}'},
+        }]
+        handler = mock.Mock(return_value='{"path":"main.py","content":"print(1)"}')
+
+        reply = ChatCompletionsClient("fake").complete(
+            "system",
+            "analyze main.py",
+            tools=[local_file_tools.READ_LOCAL_FILE_TOOL],
+            tool_handler=handler,
+        )
+
+        self.assertEqual(reply, MODEL_REPLY)
+        handler.assert_called_once_with("read_local_file", {"path": "main.py"})
+        first_body = self.provider.requests[0]["body"]
+        second_body = self.provider.requests[1]["body"]
+        self.assertEqual(first_body["tools"], [local_file_tools.READ_LOCAL_FILE_TOOL])
+        self.assertEqual(first_body["tool_choice"], "auto")
+        self.assertEqual(second_body["messages"][-1], {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": '{"path":"main.py","content":"print(1)"}',
+        })
 
     def test_json_mode_only_when_profile_supports_it(self) -> None:
         ChatCompletionsClient("fake").complete("objeto JSON", "x", json_output=True)
@@ -496,10 +635,8 @@ class CheckTest(ProviderCase):
 
 
 class TerminalOutputTest(unittest.TestCase):
-    def test_banner_uses_compact_version_for_narrow_terminals(self) -> None:
-        banner = app.startup_banner(100)
-        self.assertIn("COMPETITIVE PROGRAMMING COACH", banner)
-        self.assertLessEqual(max(map(len, banner.splitlines())), 100)
+    def test_banner_is_omitted_when_it_does_not_fit(self) -> None:
+        self.assertIsNone(app.startup_banner(100))
         self.assertEqual(app.startup_banner(162), app.ASCII_BANNER)
 
     def test_render_markdown_passes_source_to_glow_with_terminal_width(self) -> None:
@@ -557,11 +694,19 @@ class EndToEndChatTest(ProviderCase):
         )
 
     def test_chat_session_with_configured_model(self) -> None:
-        result = self.run_app(["/model", "/learn dp", "quero dicas do 1950D", "/quit"], "--model", "fake")
+        result = self.run_app(["/model", "/help", "/learn dp", "quero dicas do 1950D", "/quit"], "--model", "fake")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("modelo fake (fake/model:free)", result.stdout)
-        self.assertIn("COMPETITIVE PROGRAMMING COACH", result.stdout)
+        self.assertNotIn("COMPETITIVE PROGRAMMING COACH", result.stdout)
+        self.assertNotIn("perfil USER", result.stdout)
+        self.assertNotIn("O modo ADMIN vem apenas", result.stdout)
+        self.assertNotIn("/model [perfil]", result.stdout)
+        self.assertIn("/consolidar (/consolidate)", result.stdout)
         self.assertIn("* fake: custom | fake/model:free | gratuito", result.stdout)
+        self.assertTrue(any(
+            any(tool["function"]["name"] == "read_local_file" for tool in request["body"].get("tools", []))
+            for request in self.provider.requests
+        ))
         self.assertIn("\nVocê> ", result.stdout)
         self.assertRegex(result.stdout, r"\[\d{2}:\d{2}:\d{2}\] Mensagem enviada\.")
         self.assertRegex(result.stdout, r"\[\d{2}:\d{2}:\d{2}\] Manager>")

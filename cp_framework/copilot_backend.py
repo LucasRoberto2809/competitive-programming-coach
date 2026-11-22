@@ -14,7 +14,7 @@ import os
 import re
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import HTTP_TIMEOUT_SECONDS
 
@@ -126,7 +126,44 @@ def summarize_usage(usage_events: list[Any], checkpoints: list[Any]) -> dict[str
     }
 
 
-async def _complete(profile: Any, system_prompt: str, user_prompt: str, token: str | None, timeout: float) -> tuple[str | None, dict[str, Any]]:
+def _copilot_tools(
+    tools: list[dict[str, Any]],
+    tool_handler: Callable[[str, dict[str, Any]], str],
+) -> list[Any]:
+    from copilot import define_tool
+    from pydantic import BaseModel, Field
+
+    if len(tools) != 1 or tools[0].get("function", {}).get("name") != "read_local_file":
+        raise ValueError("O Copilot SDK só está configurado para a ferramenta read_local_file.")
+
+    class ReadLocalFileParams(BaseModel):
+        path: str = Field(description="Repository-relative path to the text file.")
+
+    def read_local_file(params: Any, _invocation: Any) -> str:
+        return tool_handler("read_local_file", params.model_dump())
+
+    spec = tools[0]["function"]
+    tool = define_tool(
+        name="read_local_file",
+        description=str(spec.get("description", "")),
+        handler=read_local_file,
+        params_type=ReadLocalFileParams,
+        skip_permission=True,
+        defer="never",
+        idempotent=True,
+    )
+    return [tool]
+
+
+async def _complete(
+    profile: Any,
+    system_prompt: str,
+    user_prompt: str,
+    token: str | None,
+    timeout: float,
+    tools: list[dict[str, Any]] | None = None,
+    tool_handler: Callable[[str, dict[str, Any]], str] | None = None,
+) -> tuple[str | None, dict[str, Any]]:
     from copilot import CopilotClient
     from copilot.session_events import AssistantMessageData, AssistantUsageData, SessionUsageCheckpointData
 
@@ -151,6 +188,10 @@ async def _complete(profile: Any, system_prompt: str, user_prompt: str, token: s
     }
     if getattr(profile, "reasoning_effort", None):
         session_options["reasoning_effort"] = profile.reasoning_effort
+    if tools:
+        if tool_handler is None:
+            raise ValueError("Uma função de execução é obrigatória quando ferramentas são configuradas.")
+        session_options["tools"] = _copilot_tools(tools, tool_handler)
     async with CopilotClient(**client_options) as client:
         async with await client.create_session(**session_options) as session:
             session.on(on_event)
@@ -162,7 +203,14 @@ async def _complete(profile: Any, system_prompt: str, user_prompt: str, token: s
 RATE_LIMIT_RE = re.compile(r"rate.?limit|429|too many requests|quota|budget", re.I)
 
 
-def complete_with_copilot(profile: Any, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any]]:
+def complete_with_copilot(
+    profile: Any,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    tool_handler: Callable[[str, dict[str, Any]], str] | None = None,
+) -> tuple[str, dict[str, Any]]:
     from .providers import ProviderError
 
     if not sdk_available():
@@ -172,7 +220,9 @@ def complete_with_copilot(profile: Any, system_prompt: str, user_prompt: str) ->
     if problem:
         raise ProviderError(problem)
     try:
-        content, usage = asyncio.run(_complete(profile, system_prompt, user_prompt, token, HTTP_TIMEOUT_SECONDS))
+        content, usage = asyncio.run(
+            _complete(profile, system_prompt, user_prompt, token, HTTP_TIMEOUT_SECONDS, tools, tool_handler)
+        )
     except ProviderError:
         raise
     except Exception as exc:

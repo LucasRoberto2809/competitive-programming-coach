@@ -27,14 +27,16 @@ FLOW = {
         "- Aprendizado: tema → leitura (CP-Algorithms) e problemas do Codeforces por faixa → sua "
         "observação ou pseudocódigo → dicas progressivas → solução completa (depois do pseudocódigo).\n"
         "- Problem Setter: seu enunciado → revisão dos exemplos de entrada/saída → hipótese de falha → "
-        "testes de estresse para o seu código."
+        "testes de estresse para o seu código.\n"
+        "Para analisar código do repositório, informe o caminho relativo do arquivo; o modelo pode lê-lo automaticamente."
     ),
     "en": (
         "How this tool works:\n"
         "- Learning: topic → reading (CP-Algorithms) and Codeforces problems by band → your "
         "observation or pseudocode → progressive hints → full solution (after the pseudocode).\n"
         "- Problem Setter: your statement → review of the sample input/output → failure hypothesis → "
-        "stress tests for your code."
+        "stress tests for your code.\n"
+        "To analyze repository code, include its repository-relative path; the model can read it automatically."
     ),
 }
 

@@ -1,5 +1,5 @@
 {
-  "default": "ollama-llama3.2",
+  "default": "nemotron-super-free",
   "profiles": {
     "ollama-llama3.2": {
       "provider": "ollama",
