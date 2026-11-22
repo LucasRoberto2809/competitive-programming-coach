@@ -49,6 +49,16 @@ The runtime separates the source collector, response-template renderer, and guar
 | Guardrails | Enforce USER/ADMIN configuration, learning/problem-setter gates, response checks, and score-only evaluation with Jev when configured | `python -m cp_framework.services.guardrails` |
 | Session app | Maintain one in-memory conversation and launch each service in a separate child process | `python -m cp_framework.app` |
 
+The modules in `cp_framework.hooks` are standalone JSON entry points for skills and external harnesses. The manager-token requirement on `templates` and `guardrails` is unchanged; calls outside that trusted route return `manager_required`.
+
+### Stress-test execution hook
+
+The Coach may call `python -m cp_framework.hooks.stress_tests` only while proposing stress-test cases, and only after receiving the full statement, constraints, user solution, and a user-stated failure/performance hypothesis. The JSON request must set `task_mode` to `STRESS_TEST` and `phase` to `case_proposal`. Case data and expected outputs are provided by the invoking harness; this repository contains no committed stress-test fixtures.
+
+The hook uses the host's current Python interpreter and `g++` (or the executable configured in `CXX`) for C++. It applies per-case and overall time limits, but local execution is not a sandbox: code runs with the current user's file and network permissions. Use it only for code the user has asked to test. A reported pass means only that output matched the supplied expected output; it is not proof that the oracle or solution is correct.
+
+Submit the harness-provided request as JSON on stdin to `uv run python -m cp_framework.hooks.stress_tests`. This execution hook must not be used by learning, Solver, or other non-stress-test stages.
+
 Sources stores snapshots under `data/sources/` (or `CP_DATA_DIR`): Codeforces problem metadata, the tag → rating catalog (`codeforces_catalog.json`), the cp-algorithms article index, and requested Markdown articles. The application syncs the catalogs on first use if local snapshots are missing; Codeforces calls are throttled to one request every 2 seconds. Article content is fetched on demand. The data directory is git-ignored.
 
 The manager selects practice problems locally from the catalog (`cp_framework/catalog.py`): topics in Portuguese or English map to Codeforces tags, and combinations require every tag. Bands are easy 800–999, medium 1000–1499, hard 1500–2099, and veteran 2100+ (Problem Setter references only). By default the two most-solved unseen problems per band are shown, never more than three per band and topic; "mais problemas" continues until the catalog runs out. If a band is short, the rating range widens (±100, ±200) and then accepts partial tag matches; the template tells the user what was adjusted.
