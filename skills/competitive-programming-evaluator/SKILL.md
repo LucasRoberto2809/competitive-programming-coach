@@ -75,10 +75,9 @@ Use integer criterion scores on the supplied 0–4 scale and calculate `pass` fr
 
 ## Backends
 
-The evaluator is model-agnostic. The runtime may run it on any configured model reachable through an OpenAI-compatible chat API (a named profile, currently restricted to free models), on Jev typed score judgments, or not at all:
+The evaluator may run on a configured model reachable through an OpenAI-compatible chat API, or not at all:
 
 - With a chat model, the model returns only `{"criteria": {...}}` with integer scores; the runtime computes `total` and `pass` itself so a model cannot inflate the result.
-- With Jev, map its typed score judgments to the same schema; do not treat Jev's confidence as correctness proof.
 - If the output is malformed or the backend fails, the evaluation is recorded as unavailable, never as a pass.
 
 Scores from different evaluator models are not directly comparable; record which profile produced them.

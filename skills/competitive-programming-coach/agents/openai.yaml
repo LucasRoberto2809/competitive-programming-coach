@@ -1,6 +1,0 @@
-interface:
-  display_name: "Competitive Programming Coach"
-  short_description: "Teach topics and suggest practice problems"
-  default_prompt: "Use $competitive-programming-manager to choose a study topic, difficulty range, and learning mode."
-policy:
-  allow_implicit_invocation: false

@@ -1,6 +1,0 @@
-interface:
-  display_name: "Competitive Programming Solver"
-  short_description: "Return source-backed solution code only"
-  default_prompt: "Use $competitive-programming-solver only when the manager routes a complete implementation request."
-policy:
-  allow_implicit_invocation: false
