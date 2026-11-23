@@ -1,4 +1,5 @@
 .env
+data/
 data/sources/*.json
 data/sources/*.tmp
 data/sources/.codeforces_last_request
